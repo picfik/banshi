@@ -9,6 +9,7 @@ export type AiPreferences = {
 };
 
 const MAX_SOURCE_CHARS = 24000;
+const AI_REQUEST_TIMEOUT_MS = 90000;
 const PROVIDERS: Record<AiProvider, { label: string; model: string; endpoint: string }> = {
   aliyun: {
     label: "阿里云百炼",
@@ -96,9 +97,13 @@ export async function analyzeAttachment(
 
   const provider = PROVIDERS[preferences.provider];
   let response: Response;
+  let responseText: string;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS);
   try {
     response = await fetch(provider.endpoint, {
       method: "POST",
+      signal: controller.signal,
       headers: {
         Authorization: `Bearer ${preferences.apiKey}`,
         "Content-Type": "application/json",
@@ -118,10 +123,15 @@ export async function analyzeAttachment(
         ],
       }),
     });
+    responseText = await response.text();
   } catch (reason) {
+    if (controller.signal.aborted) {
+      throw new Error(`${provider.label}请求超过 90 秒未完成，请检查网络或服务状态后重试`);
+    }
     throw new Error(`无法连接${provider.label}。请检查浏览器网络和服务跨域设置：${reason instanceof Error ? reason.message : String(reason)}`);
+  } finally {
+    clearTimeout(timeout);
   }
-  const responseText = await response.text();
   if (!response.ok) {
     throw new Error(`${provider.label}请求失败（${response.status}）：${responseText.slice(0, 500)}`);
   }
