@@ -642,7 +642,7 @@ function App() {
                   <div className="case-action-buttons">
                     <button className="secondary" disabled={busy || !online} onClick={() => setRenameOpen(true)}>修改名称</button>
                     <button className="secondary" disabled={busy || !online} onClick={() => void updateCaseFlags({ isImportant: !selectedCase.isImportant })}>{selectedCase.isImportant ? "★ 已置顶" : "设为重要并置顶"}</button>
-                    <button className="secondary" disabled={busy || !online} onClick={() => void updateCaseFlags({ isOnHold: !selectedCase.isOnHold })}>{selectedCase.isOnHold ? "恢复办理" : "设为搁置"}</button>
+                    <button className="secondary" disabled={busy || !online} onClick={() => void updateCaseFlags({ isOnHold: !selectedCase.isOnHold })}>{selectedCase.isOnHold ? "恢复办理" : "设为搁置并置底"}</button>
                     <button className="danger-button" disabled={busy || !online} onClick={() => void deleteCase()}>删除事项</button>
                   </div>
                 </div>
@@ -650,7 +650,7 @@ function App() {
               {(selectedCase.isImportant || selectedCase.isOnHold) && (
                 <div className="case-status-badges">
                   {selectedCase.isImportant && <span className="case-badge important">★ 重要事项（列表置顶）</span>}
-                  {selectedCase.isOnHold && <span className="case-badge on-hold">当前搁置</span>}
+                  {selectedCase.isOnHold && <span className="case-badge on-hold">搁置事项（列表置底）</span>}
                 </div>
               )}
               <div className="source-card"><span className="source-icon">↳</span><div><span>事项来源</span><strong>{selectedCase.source}</strong></div>{selectedHandlingPath && <span className="path-chip">路径：{selectedHandlingPath.title}</span>}<small>建档于 {formatTime(selectedCase.createdAt)}</small></div>

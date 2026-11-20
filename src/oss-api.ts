@@ -232,7 +232,11 @@ function publicCase(record: StoredCase): CaseRecord {
 
 function publicCases() {
   return [...currentData().cases]
-    .sort((a, b) => Number(Boolean(b.isImportant)) - Number(Boolean(a.isImportant)) || b.updatedAt.localeCompare(a.updatedAt))
+    .sort((a, b) =>
+      Number(Boolean(a.isOnHold)) - Number(Boolean(b.isOnHold)) ||
+      Number(Boolean(b.isImportant)) - Number(Boolean(a.isImportant)) ||
+      b.updatedAt.localeCompare(a.updatedAt),
+    )
     .map(publicCase);
 }
 

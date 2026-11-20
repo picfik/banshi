@@ -126,6 +126,34 @@ test("does not delete attachments when case deletion fails to sync", async (t) =
   assert.equal(context.deleted.length, 0);
 });
 
+test("renames cases and sorts important cases first and held cases last", async (t) => {
+  const context = await setup();
+  t.after(() => context.close());
+
+  const ordinary = await context.createCase("普通事项");
+  const important = await context.createCase("待办事项");
+  const held = await context.createCase("暂缓事项");
+
+  const renamed = await context.api(`/api/cases/${ordinary.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title: "  已修改名称  " }),
+  });
+  assert.equal(renamed.case.title, "已修改名称");
+
+  await context.api(`/api/cases/${important.id}/flags`, {
+    method: "PATCH",
+    body: JSON.stringify({ isImportant: true, isOnHold: false }),
+  });
+  await context.api(`/api/cases/${held.id}/flags`, {
+    method: "PATCH",
+    body: JSON.stringify({ isImportant: true, isOnHold: true }),
+  });
+
+  const result = await context.api("/api/cases");
+  assert.deepEqual(result.cases.map((record) => record.id), [important.id, ordinary.id, held.id]);
+  assert.equal(result.cases[2].isOnHold, true);
+});
+
 test("saves AI provider credentials and model in shared OSS settings", async (t) => {
   const context = await setup();
   t.after(() => context.close());

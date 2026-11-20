@@ -65,6 +65,36 @@ test("business APIs require an authenticated session", async (t) => {
   assert.equal(response.body.error.code, "UNAUTHENTICATED");
 });
 
+test("renames cases and orders important cases first and held cases last", async (t) => {
+  const context = await setup();
+  t.after(() => rm(context.directory, { recursive: true, force: true }));
+
+  const ordinary = await newCase(context.agent);
+  const important = await newCase(context.agent);
+  const held = await newCase(context.agent);
+
+  const renamed = await context.agent.patch(`/api/cases/${ordinary.id}`).send({ title: "  已修改名称  " });
+  assert.equal(renamed.status, 200);
+  assert.equal(renamed.body.case.title, "已修改名称");
+
+  const invalidTitle = await context.agent.patch(`/api/cases/${ordinary.id}`).send({ title: " " });
+  assert.equal(invalidTitle.status, 400);
+  assert.equal(invalidTitle.body.error.code, "INVALID_TITLE");
+
+  assert.equal((await context.agent.patch(`/api/cases/${important.id}/flags`).send({
+    isImportant: true,
+    isOnHold: false,
+  })).status, 200);
+  assert.equal((await context.agent.patch(`/api/cases/${held.id}/flags`).send({
+    isImportant: true,
+    isOnHold: true,
+  })).status, 200);
+
+  const listed = await context.agent.get("/api/cases");
+  assert.deepEqual(listed.body.cases.map((record) => record.id), [important.id, ordinary.id, held.id]);
+  assert.equal(listed.body.cases[2].isOnHold, true);
+});
+
 test("global search finds case records and step notes", async (t) => {
   const context = await setup();
   t.after(() => rm(context.directory, { recursive: true, force: true }));

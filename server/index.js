@@ -77,6 +77,8 @@ function publicAttachment(attachment) {
 function publicCase(record) {
   return {
     ...record,
+    isImportant: Boolean(record.isImportant),
+    isOnHold: Boolean(record.isOnHold),
     steps: record.steps.map((step) => ({
       ...step,
       attachments: step.attachments.map(publicAttachment),
@@ -281,7 +283,11 @@ export async function createApp({
 
   app.get("/api/cases", (req, res) => {
     res.json({
-      cases: [...dataStore.data.cases].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(publicCase),
+      cases: [...dataStore.data.cases].sort((a, b) =>
+        Number(Boolean(a.isOnHold)) - Number(Boolean(b.isOnHold)) ||
+        Number(Boolean(b.isImportant)) - Number(Boolean(a.isImportant)) ||
+        b.updatedAt.localeCompare(a.updatedAt),
+      ).map(publicCase),
       sync: publicSync(dataStore.data.sync, dataStore.data),
     });
   });
@@ -320,6 +326,44 @@ export async function createApp({
   app.get("/api/cases/:caseId", (req, res) => {
     const record = getCase(req.params.caseId);
     if (!record) return sendError(res, 404, "CASE_NOT_FOUND", "未找到该事项");
+    res.json({ case: publicCase(record), sync: publicSync(dataStore.data.sync, dataStore.data) });
+  });
+
+  app.patch("/api/cases/:caseId", async (req, res) => {
+    const record = getCase(req.params.caseId);
+    if (!record) return sendError(res, 404, "CASE_NOT_FOUND", "未找到该事项");
+    const title = req.body?.title;
+    if (typeof title !== "string" || !title.trim() || title.trim().length > 160) {
+      return sendError(res, 400, "INVALID_TITLE", "事项名称必填且不能超过 160 个字符");
+    }
+    const previousTitle = record.title;
+    await dataStore.transaction(async (data) => {
+      record.title = title.trim();
+      record.updatedAt = new Date().toISOString();
+      addAudit(data, req.username, "case_renamed", record.id, { previousTitle, title: record.title });
+      await dataStore.save();
+      await syncJson();
+    });
+    res.json({ case: publicCase(record), sync: publicSync(dataStore.data.sync, dataStore.data) });
+  });
+
+  app.patch("/api/cases/:caseId/flags", async (req, res) => {
+    const record = getCase(req.params.caseId);
+    if (!record) return sendError(res, 404, "CASE_NOT_FOUND", "未找到该事项");
+    if (typeof req.body?.isImportant !== "boolean" || typeof req.body?.isOnHold !== "boolean") {
+      return sendError(res, 400, "INVALID_CASE_FLAGS", "事项重要和搁置状态必须是布尔值");
+    }
+    await dataStore.transaction(async (data) => {
+      record.isImportant = req.body.isImportant;
+      record.isOnHold = req.body.isOnHold;
+      record.updatedAt = new Date().toISOString();
+      addAudit(data, req.username, "case_flags_updated", record.id, {
+        isImportant: record.isImportant,
+        isOnHold: record.isOnHold,
+      });
+      await dataStore.save();
+      await syncJson();
+    });
     res.json({ case: publicCase(record), sync: publicSync(dataStore.data.sync, dataStore.data) });
   });
 

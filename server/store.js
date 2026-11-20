@@ -241,6 +241,8 @@ export function createCaseRecord(input, stages = STAGES) {
     title: input.title.trim(),
     description: input.description.trim(),
     source: input.source.trim(),
+    isImportant: false,
+    isOnHold: false,
     createdAt: now,
     updatedAt: now,
     handlingPath: null,
