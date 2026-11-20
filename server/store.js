@@ -192,6 +192,13 @@ export function createDataStore(filePath) {
         throw new Error("采购模式配置无效");
       }
       for (const record of data.cases) {
+        const isOnHold = Boolean(record.isOnHold);
+        const isImportant = Boolean(record.isImportant) && !isOnHold;
+        if (record.isOnHold !== isOnHold || record.isImportant !== isImportant) {
+          record.isOnHold = isOnHold;
+          record.isImportant = isImportant;
+          migrated = true;
+        }
         if (record.handlingPath === undefined) {
           record.handlingPath = null;
           migrated = true;

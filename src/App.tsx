@@ -86,13 +86,12 @@ function App() {
     setError(reason instanceof Error ? reason.message : "操作失败，请重试");
   }, []);
 
-  const refreshCases = useCallback(async (caseId?: string | null) => {
+  const refreshCases = useCallback(async (caseId: string | null) => {
     const result = await api<CasesResponse>("/api/cases");
     setCases(result.cases);
     setSync(result.sync);
-    const targetId = caseId === undefined ? selectedId : caseId;
-    if (targetId) {
-      const detail = await api<CaseResponse>(`/api/cases/${targetId}`);
+    if (caseId) {
+      const detail = await api<CaseResponse>(`/api/cases/${caseId}`);
       setSelectedCase(detail.case);
       setSelectedId(detail.case.id);
       setSync(detail.sync);
@@ -105,7 +104,7 @@ function App() {
       setSelectedCase(null);
       setSelectedId(null);
     }
-  }, [selectedId]);
+  }, []);
 
   const loadWorkspace = useCallback(async () => {
     setLoading(true);
@@ -370,8 +369,8 @@ function App() {
       const result = await api<CaseResponse>(`/api/cases/${selectedCase.id}/flags`, {
         method: "PATCH",
         body: jsonBody({
-          isImportant: patch.isImportant ?? Boolean(selectedCase.isImportant),
-          isOnHold: patch.isOnHold ?? Boolean(selectedCase.isOnHold),
+          isImportant: patch.isOnHold === true ? false : patch.isImportant ?? Boolean(selectedCase.isImportant),
+          isOnHold: patch.isImportant === true ? false : patch.isOnHold ?? Boolean(selectedCase.isOnHold),
         }),
       });
       await refreshCases(result.case.id);

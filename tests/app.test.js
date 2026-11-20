@@ -88,6 +88,10 @@ test("renames cases and orders important cases first and held cases last", async
   assert.equal((await context.agent.patch(`/api/cases/${held.id}/flags`).send({
     isImportant: true,
     isOnHold: true,
+  })).status, 400);
+  assert.equal((await context.agent.patch(`/api/cases/${held.id}/flags`).send({
+    isImportant: false,
+    isOnHold: true,
   })).status, 200);
 
   const listed = await context.agent.get("/api/cases");

@@ -134,6 +134,14 @@ test("renames cases and sorts important cases first and held cases last", async 
   const important = await context.createCase("待办事项");
   const held = await context.createCase("暂缓事项");
 
+  await assert.rejects(
+    context.api(`/api/cases/${ordinary.id}/flags`, {
+      method: "PATCH",
+      body: JSON.stringify({ isImportant: true, isOnHold: true }),
+    }),
+    (error) => error.status === 400 && error.code === "INVALID_CASE_FLAGS",
+  );
+
   const renamed = await context.api(`/api/cases/${ordinary.id}`, {
     method: "PATCH",
     body: JSON.stringify({ title: "  已修改名称  " }),
@@ -146,7 +154,7 @@ test("renames cases and sorts important cases first and held cases last", async 
   });
   await context.api(`/api/cases/${held.id}/flags`, {
     method: "PATCH",
-    body: JSON.stringify({ isImportant: true, isOnHold: true }),
+    body: JSON.stringify({ isImportant: false, isOnHold: true }),
   });
 
   const result = await context.api("/api/cases");

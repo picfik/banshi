@@ -350,8 +350,11 @@ export async function createApp({
   app.patch("/api/cases/:caseId/flags", async (req, res) => {
     const record = getCase(req.params.caseId);
     if (!record) return sendError(res, 404, "CASE_NOT_FOUND", "未找到该事项");
-    if (typeof req.body?.isImportant !== "boolean" || typeof req.body?.isOnHold !== "boolean") {
-      return sendError(res, 400, "INVALID_CASE_FLAGS", "事项重要和搁置状态必须是布尔值");
+    if (
+      typeof req.body?.isImportant !== "boolean" || typeof req.body?.isOnHold !== "boolean" ||
+      (req.body.isImportant && req.body.isOnHold)
+    ) {
+      return sendError(res, 400, "INVALID_CASE_FLAGS", "事项重要和搁置状态必须是布尔值且只能选择一项");
     }
     await dataStore.transaction(async (data) => {
       record.isImportant = req.body.isImportant;

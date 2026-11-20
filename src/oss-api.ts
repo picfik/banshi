@@ -145,6 +145,8 @@ async function ensureLoaded(): Promise<void> {
         if (!Array.isArray(remote.settings.procurementModes)) throw new Error("OSS 采购路径配置无效");
         if (!isAiPreferences(remote.settings.ai)) throw new Error("OSS AI 服务配置无效");
         remote.cases.forEach((record) => {
+          record.isOnHold = Boolean(record.isOnHold);
+          record.isImportant = Boolean(record.isImportant) && !record.isOnHold;
           record.handlingPath ??= null;
           const processStep = record.steps?.find((step) => step.id === "process-handle");
           if (processStep && !Array.isArray(processStep.procurementSteps)) processStep.procurementSteps = [];
@@ -526,8 +528,11 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
   const resource = segments[3];
 
   if (resource === "flags" && segments.length === 4 && method === "PATCH") {
-    if (typeof body.isImportant !== "boolean" || typeof body.isOnHold !== "boolean") {
-      error(400, "INVALID_CASE_FLAGS", "事项重要和搁置状态必须是布尔值");
+    if (
+      typeof body.isImportant !== "boolean" || typeof body.isOnHold !== "boolean" ||
+      (body.isImportant && body.isOnHold)
+    ) {
+      error(400, "INVALID_CASE_FLAGS", "事项重要和搁置状态必须是布尔值且只能选择一项");
     }
     record.isImportant = body.isImportant;
     record.isOnHold = body.isOnHold;
