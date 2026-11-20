@@ -181,6 +181,26 @@ test("procurement mode steps are configurable, snapshotted, and server-enforced 
   await context.agent.patch(`/api/cases/${record.id}/procurement-steps/${procurementSteps[1].id}`).send({ note: "完成第二项记录" });
   assert.equal((await context.agent.post(`/api/cases/${record.id}/procurement-steps/${procurementSteps[1].id}/complete`).send({})).status, 200);
   assert.equal((await context.agent.post(`/api/cases/${record.id}/steps/process-handle/complete`).send({})).status, 200);
+  await context.agent.patch(`/api/cases/${record.id}/steps/process-check`).send({ note: "复核办理情况" });
+  assert.equal((await context.agent.post(`/api/cases/${record.id}/steps/process-check/complete`).send({})).status, 200);
+
+  const returned = await context.agent
+    .post(`/api/cases/${record.id}/procurement-steps/${procurementSteps[0].id}/reopen`)
+    .send({ confirm: true });
+  assert.equal(returned.status, 200);
+  const returnedSteps = returned.body.case.steps;
+  assert.equal(returnedSteps.find((step) => step.id === "process-handle").status, "pending");
+  assert.equal(returnedSteps.find((step) => step.id === "process-check").status, "pending");
+  const returnedProcurementSteps = returnedSteps.find((step) => step.id === "process-handle").procurementSteps;
+  assert.equal(returnedProcurementSteps[0].status, "pending");
+  assert.equal(returnedProcurementSteps[0].note, "完成第一项记录");
+  assert.equal(returnedProcurementSteps[1].status, "pending");
+  assert.equal(returnedProcurementSteps[1].note, "完成第二项记录");
+  const revised = await context.agent
+    .patch(`/api/cases/${record.id}/procurement-steps/${procurementSteps[0].id}`)
+    .send({ note: "已修改第一项记录" });
+  assert.equal(revised.status, 200);
+  assert.equal(revised.body.case.steps.find((step) => step.id === "process-handle").procurementSteps[0].note, "已修改第一项记录");
 });
 
 test("procurement substeps store and manage their own attachments", async (t) => {

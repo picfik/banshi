@@ -402,3 +402,67 @@ textarea::placeholder, input::placeholder { color: #b3bdb5; }
   .search-results-panel { top: 50px; }
   .workspace { min-height: auto; }
 }
+
+.procurement-step-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.procurement-step-title > div { display: grid; gap: 5px; }
+.procurement-reopen-button { flex: 0 0 auto; padding: 2px 6px; color: #8a5a38; white-space: nowrap; }
+.audit-checklist-overlay { position: fixed; z-index: 30; inset: 0; overflow: auto; padding: 20px; background: #e9eee9; }
+.audit-checklist-toolbar { position: sticky; z-index: 1; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; max-width: 940px; margin: 0 auto; padding: 12px 16px; border: 1px solid #dfe7df; border-radius: 9px; background: #fff; box-shadow: 0 5px 18px rgba(27, 55, 45, .08); }
+.audit-checklist-toolbar strong { color: #314d3d; }
+.audit-checklist-toolbar > div { display: flex; gap: 8px; }
+.audit-checklist-document { width: min(100%, 940px); margin: 14px auto 30px; padding: 44px 52px; border: 1px solid #e1e6e1; background: #fff; color: #26352d; box-shadow: 0 8px 30px rgba(27, 55, 45, .08); }
+.audit-document-header { padding-bottom: 20px; border-bottom: 2px solid #314d3d; text-align: center; }
+.audit-document-header p { margin: 0 0 8px; color: #66776c; font-size: 14px; letter-spacing: .12em; }
+.audit-document-header h1 { margin: 0 0 8px; color: #203a2b; font-size: 28px; letter-spacing: .08em; }
+.audit-document-header span { color: #657369; font-size: 13px; }
+.audit-document-section { margin-top: 24px; }
+.audit-document-section > h2 { margin: 0 0 12px; padding-bottom: 7px; border-bottom: 1px solid #8a9b8e; color: #2f4d39; font-size: 17px; }
+.audit-info-table, .audit-signature-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.audit-info-table th, .audit-info-table td, .audit-signature-table th, .audit-signature-table td { padding: 8px 10px; border: 1px solid #cfd7d0; text-align: left; vertical-align: top; }
+.audit-info-table th, .audit-signature-table th { width: 16%; color: #46594c; background: #f3f6f2; font-weight: 600; }
+.audit-info-table td { white-space: pre-wrap; overflow-wrap: anywhere; }
+.audit-process-step { margin: 14px 0; padding: 13px 14px; border: 1px solid #d6ded7; border-radius: 5px; break-inside: auto; }
+.audit-process-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.audit-process-heading h3, .audit-process-heading h4 { margin: 0; color: #2f4938; font-size: 15px; }
+.audit-process-heading strong { flex: 0 0 auto; color: #496a50; font-size: 12px; }
+.audit-guidance, .audit-record, .audit-meta { margin: 7px 0 0; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.audit-guidance, .audit-meta { color: #657369; }
+.audit-record { color: #303d34; }
+.audit-step-attachments { margin-top: 10px; padding-top: 8px; border-top: 1px dotted #c7d0c8; font-size: 12px; }
+.audit-step-attachments > b { color: #405447; }
+.audit-attachment-list { display: grid; gap: 5px; margin: 7px 0 0; padding: 0; list-style: none; }
+.audit-attachment-list li { display: flex; align-items: flex-start; gap: 7px; break-inside: avoid; }
+.audit-attachment-list li > span { flex: 0 0 auto; color: #46584a; }
+.audit-attachment-list li > div { min-width: 0; display: grid; gap: 2px; }
+.audit-attachment-list strong { overflow-wrap: anywhere; font-weight: 500; }
+.audit-attachment-list small { color: #69766c; font-size: 11px; }
+.audit-empty { margin: 6px 0 0; color: #778277; }
+.audit-procurement-step { margin: 10px 0 0 16px; padding: 10px 12px; border-left: 2px solid #8eaa91; background: #f7f9f6; }
+.audit-procurement-step .audit-process-heading h4 { font-size: 13px; }
+.audit-review-checklist { display: grid; gap: 8px; margin: 12px 0 18px; padding: 0; list-style: none; font-size: 13px; }
+.audit-review-checklist li { display: flex; gap: 8px; }
+.audit-signature-table { margin-top: 12px; text-align: center; }
+.audit-signature-table th { width: auto; text-align: center; }
+.audit-signature-table td { height: 48px; }
+.audit-document-note { margin: 18px 0 0; color: #67746a; font-size: 11px; line-height: 1.6; }
+
+@media (max-width: 730px) {
+  .audit-checklist-overlay { padding: 8px; }
+  .audit-checklist-document { padding: 24px 18px; }
+  .audit-checklist-toolbar { padding: 9px; }
+  .audit-checklist-toolbar .secondary, .audit-checklist-toolbar .primary { padding: 0 9px; }
+  .audit-info-table th, .audit-info-table td { padding: 6px; }
+}
+
+@media print {
+  @page { size: A4; margin: 14mm; }
+  body * { visibility: hidden !important; }
+  .audit-checklist-overlay, .audit-checklist-overlay * { visibility: visible !important; }
+  .audit-checklist-overlay { position: absolute; inset: 0; display: block; overflow: visible; padding: 0; background: #fff; }
+  .audit-checklist-toolbar { display: none !important; }
+  .audit-checklist-document { width: 100%; margin: 0; padding: 0; border: 0; box-shadow: none; }
+  .audit-info-table tr, .audit-signature-table tr, .audit-process-heading { break-inside: avoid; }
+  .audit-document-section > h2 { break-after: avoid; }
+  .audit-process-step { padding: 9px 10px; }
+  .audit-checklist-document, .audit-checklist-document * { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+}

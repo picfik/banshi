@@ -652,6 +652,43 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
     addAudit("procurement_step_completed", record.id, { handlingPath: record.handlingPath, stepId: procurementStep.id });
     return { case: publicCase(record), sync: await save() };
   }
+  if (resource === "procurement-steps" && segments.length === 6 && segments[5] === "reopen" && method === "POST") {
+    const handleStep = record.steps.find((step) => step.id === "process-handle");
+    const procurementStep = handleStep?.procurementSteps?.find((item) => item.id === segments[4]);
+    if (!handleStep || !procurementStep) error(404, "PROCUREMENT_STEP_NOT_FOUND", "未找到该采购步骤");
+    if (body.confirm !== true) error(400, "CONFIRM_REQUIRED", "退回采购步骤修改需要明确确认");
+    if (procurementStep.status !== "completed") error(409, "PROCUREMENT_STEP_NOT_COMPLETED", "只有已完成的采购步骤可以退回修改");
+    if (handleStep.status !== "completed" && currentStep(record)?.id !== handleStep.id) {
+      error(409, "PROCUREMENT_STAGE_NOT_CURRENT", "请先完成前序办理步骤");
+    }
+    const procurementSteps = handleStep.procurementSteps ?? [];
+    const procurementIndex = procurementSteps.findIndex((item) => item.id === procurementStep.id);
+    const reopenedProcurementSteps = procurementSteps.slice(procurementIndex);
+    for (const item of reopenedProcurementSteps) {
+      item.status = "pending";
+      item.completedAt = null;
+      item.completedBy = null;
+    }
+    if (handleStep.status === "completed") {
+      const index = record.steps.findIndex((step) => step.id === handleStep.id);
+      for (const step of record.steps.slice(index)) {
+        step.status = "pending";
+        step.completedAt = null;
+        step.completedBy = null;
+        step.humanReview = null;
+      }
+    }
+    procurementStep.status = "pending";
+    procurementStep.completedAt = null;
+    procurementStep.completedBy = null;
+    updateRecord(record);
+    addAudit("procurement_step_reopened", record.id, {
+      handlingPath: record.handlingPath,
+      stepId: procurementStep.id,
+      resetSteps: reopenedProcurementSteps.map((item) => item.id),
+    });
+    return { case: publicCase(record), sync: await save() };
+  }
   if (resource === "steps" && segments.length === 6 && segments[5] === "attachments" && method === "POST") {
     const step = getStep(record, segments[4]);
     requireCurrent(record, step);

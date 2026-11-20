@@ -587,6 +587,51 @@ export async function createApp({
     res.json({ case: publicCase(record), sync: publicSync(dataStore.data.sync, dataStore.data) });
   });
 
+  app.post("/api/cases/:caseId/procurement-steps/:procurementStepId/reopen", async (req, res) => {
+    const record = getCase(req.params.caseId);
+    if (!record) return sendError(res, 404, "CASE_NOT_FOUND", "未找到该事项");
+    const handleStep = getStep(record, "process-handle");
+    const procurementStep = handleStep?.procurementSteps?.find((item) => item.id === req.params.procurementStepId);
+    if (!procurementStep) return sendError(res, 404, "PROCUREMENT_STEP_NOT_FOUND", "未找到该采购步骤");
+    if (req.body?.confirm !== true) return sendError(res, 400, "CONFIRM_REQUIRED", "退回采购步骤修改需要明确确认");
+    if (procurementStep.status !== "completed") return sendError(res, 409, "PROCUREMENT_STEP_NOT_COMPLETED", "只有已完成的采购步骤可以退回修改");
+    if (handleStep.status !== "completed" && getCurrentStep(record)?.id !== handleStep.id) {
+      return sendError(res, 409, "PROCUREMENT_STAGE_NOT_CURRENT", "请先完成前序办理步骤");
+    }
+
+    await dataStore.transaction(async (data) => {
+      const procurementSteps = handleStep.procurementSteps ?? [];
+      const procurementIndex = procurementSteps.findIndex((item) => item.id === procurementStep.id);
+      const reopenedProcurementSteps = procurementSteps.slice(procurementIndex);
+      for (const item of reopenedProcurementSteps) {
+        item.status = "pending";
+        item.completedAt = null;
+        item.completedBy = null;
+      }
+      if (handleStep.status === "completed") {
+        const index = record.steps.findIndex((step) => step.id === handleStep.id);
+        for (const step of record.steps.slice(index)) {
+          step.status = "pending";
+          step.completedAt = null;
+          step.completedBy = null;
+          step.humanReview = null;
+        }
+      }
+      procurementStep.status = "pending";
+      procurementStep.completedAt = null;
+      procurementStep.completedBy = null;
+      record.updatedAt = new Date().toISOString();
+      addAudit(data, req.username, "procurement_step_reopened", record.id, {
+        handlingPath: record.handlingPath,
+        stepId: procurementStep.id,
+        resetSteps: reopenedProcurementSteps.map((item) => item.id),
+      });
+      await dataStore.save();
+      await syncJson();
+    });
+    res.json({ case: publicCase(record), sync: publicSync(dataStore.data.sync, dataStore.data) });
+  });
+
   app.post("/api/cases/:caseId/steps/:stepId/review", async (req, res) => {
     const record = getCase(req.params.caseId);
     if (!record) return sendError(res, 404, "CASE_NOT_FOUND", "未找到该事项");

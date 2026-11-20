@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import { api, getAttachmentUrl, jsonBody } from "./api";
 import { aiProviders, analyzeAttachment, getDefaultAiPreferences, type AiPreferences } from "./ai";
-import type { Attachment, CaseRecord, HandlingPath, ProcurementMode, Stage, Step, SyncStatus } from "./types";
+import type { Attachment, CaseRecord, HandlingPath, ProcurementMode, ProcurementStep, Stage, Step, SyncStatus } from "./types";
 import { MAX_ATTACHMENT_SIZE_BYTES, SUPPORTED_ATTACHMENT_EXTENSIONS } from "../shared/attachments.js";
 
 type CaseResponse = { case: CaseRecord; sync: SyncStatus };
@@ -68,6 +68,7 @@ function App() {
   const [searching, setSearching] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
+  const [auditChecklistOpen, setAuditChecklistOpen] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<{ targetId: string; message: string } | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [online, setOnline] = useState(navigator.onLine);
@@ -77,7 +78,7 @@ function App() {
     () => selectedCase?.steps.find((step) => step.status !== "completed") ?? null,
     [selectedCase],
   );
-  const activeStep = selectedCase && currentStep
+  const activeStep = selectedCase
     ? selectedCase.steps.find((step) => step.id === selectedStepId) ?? currentStep
     : null;
   const currentProcurementStep = activeStep?.procurementSteps?.find((step) => step.status !== "completed") ?? null;
@@ -101,7 +102,9 @@ function App() {
       const firstPending = detail.case.steps.find((step) => step.status !== "completed");
       setSelectedStepId((current) => {
         const selected = detail.case.steps.find((step) => step.id === current);
-        return selected && selected.status !== "completed" ? selected.id : firstPending?.id ?? null;
+        return selected && selected.status !== "completed"
+          ? selected.id
+          : firstPending?.id ?? detail.case.steps.at(-1)?.id ?? null;
       });
     } else {
       setSelectedCase(null);
@@ -264,6 +267,15 @@ function App() {
         body: "{}",
       });
     });
+  }
+
+  async function reopenProcurementStep(step: ProcurementStep) {
+    if (!selectedCase) return;
+    if (!window.confirm(`将采购步骤“${step.title}”退回修改？原办理记录和附件会保留；如后续流程已完成，也会重新打开后续主流程步骤。`)) return;
+    await runStepAction(() => api(
+      `/api/cases/${selectedCase.id}/procurement-steps/${step.id}/reopen`,
+      { method: "POST", body: jsonBody({ confirm: true }) },
+    ));
   }
 
   async function saveProcurementModes(modes: ProcurementMode[]) {
@@ -721,6 +733,7 @@ function App() {
                     <span>整体进度</span>
                   </div>
                   <div className="case-action-buttons">
+                    <button className="secondary" onClick={() => setAuditChecklistOpen(true)}>生成送审清单</button>
                     <button className="secondary" disabled={busy || !online} onClick={() => setRenameOpen(true)}>修改名称</button>
                     <button className="secondary" disabled={busy || !online} onClick={() => void updateCaseFlags({ isImportant: !selectedCase.isImportant })}>{selectedCase.isImportant ? "★ 已置顶" : "设为重要并置顶"}</button>
                     <button className="secondary" disabled={busy || !online} onClick={() => void updateCaseFlags({ isOnHold: !selectedCase.isOnHold })}>{selectedCase.isOnHold ? "恢复办理" : "设为搁置并置底"}</button>
@@ -800,7 +813,10 @@ function App() {
                               <li key={step.id} className={step.status === "completed" ? "done" : step.id === currentProcurementStep?.id && currentStep?.id === activeStep.id ? "current" : ""}>
                                 <span className="procurement-step-mark">{step.status === "completed" ? "✓" : index + 1}</span>
                                 <div className="procurement-step-body">
-                                  <div><strong>{step.title}</strong><small>{step.status === "completed" ? `由 ${step.completedBy} 完成 · ${formatTime(step.completedAt)}` : step.guidance}</small></div>
+                                  <div className="procurement-step-title">
+                                    <div><strong>{step.title}</strong><small>{step.status === "completed" ? `由 ${step.completedBy} 完成 · ${formatTime(step.completedAt)}` : step.guidance}</small></div>
+                                    {step.status === "completed" && <button className="text-button procurement-reopen-button" disabled={busy || !online} onClick={() => void reopenProcurementStep(step)}>退回修改</button>}
+                                  </div>
                                   <div className="materials-head"><div><h3>本步骤相关附件</h3><span>可多选并自动上传；单个文件最大 100 MB</span></div><span>{step.attachments?.length ?? 0} 份</span></div>
                                   <div className="upload-row">
                                     <input
@@ -909,6 +925,13 @@ function App() {
           <p className="privacy-note">审计记录保存在 OSS 业务 JSON 中；此 MVP 不提供独立防篡改审计存储。</p>
         </section>
       </div>}
+      {auditChecklistOpen && selectedCase && (
+        <AuditChecklist
+          record={selectedCase}
+          handlingPathTitle={config?.handlingPaths.find((path) => path.id === selectedCase.handlingPath)?.title ?? "未选择"}
+          onClose={() => setAuditChecklistOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -927,6 +950,119 @@ function AnalysisCard({ analysis }: { analysis: NonNullable<Step["attachments"][
       <p className="analysis-summary">{analysis.summary}</p>
       {groups.filter(([, items]) => items.length > 0).map(([title, items]) => <div className="analysis-group" key={title}><strong>{title}</strong><ul>{items.map((item, index) => <li key={`${title}-${index}`}>{item}</li>)}</ul></div>)}
       <p className="analysis-disclaimer">{analysis.disclaimer}</p>
+    </div>
+  );
+}
+
+function AuditChecklist({
+  record,
+  handlingPathTitle,
+  onClose,
+}: {
+  record: CaseRecord;
+  handlingPathTitle: string;
+  onClose: () => void;
+}) {
+  const [generatedAt] = useState(() => new Date().toISOString());
+  const currentStep = record.steps.find((step) => step.status !== "completed");
+  const procurementSteps = record.steps.find((step) => step.id === "process-handle")?.procurementSteps ?? [];
+  const completedCount = record.steps.filter((step) => step.status === "completed").length +
+    procurementSteps.filter((step) => step.status === "completed").length;
+  const totalCount = record.steps.length + procurementSteps.length;
+  const attachments = record.steps.flatMap((step) => [
+    ...step.attachments,
+    ...(step.procurementSteps ?? []).flatMap((procurementStep) => procurementStep.attachments ?? []),
+  ]);
+  const statusText = (completed: boolean, current: boolean) => completed ? "已完成" : current ? "办理中" : "待办理";
+  const renderAttachments = (items: Attachment[]) => items.length === 0 ? (
+    <p className="audit-empty">无附件</p>
+  ) : (
+    <ul className="audit-attachment-list">
+      {items.map((attachment) => (
+        <li key={attachment.id}>
+          <span className="audit-checkbox">□</span>
+          <div><strong>{attachment.filename}</strong><small>{attachment.size >= 1024 * 1024 ? `${(attachment.size / (1024 * 1024)).toFixed(1)} MB` : attachment.size >= 1024 ? `${(attachment.size / 1024).toFixed(1)} KB` : `${attachment.size} B`} · 上传人 {attachment.uploadedBy} · {formatTime(attachment.uploadedAt)}</small></div>
+        </li>
+      ))}
+    </ul>
+  );
+
+  return (
+    <div className="audit-checklist-overlay" role="dialog" aria-modal="true" aria-label="事项办理送审清单">
+      <div className="audit-checklist-toolbar">
+        <strong>送审清单预览</strong>
+        <div><button className="secondary" onClick={onClose}>返回</button><button className="primary" onClick={() => window.print()}>打印 / 保存为 PDF</button></div>
+      </div>
+      <article className="audit-checklist-document">
+        <header className="audit-document-header">
+          <p>事项办理材料</p>
+          <h1>事项办理送审清单</h1>
+          <span>生成时间：{formatTime(generatedAt)}</span>
+        </header>
+
+        <section className="audit-document-section">
+          <h2>一、事项基本信息</h2>
+          <table className="audit-info-table"><tbody>
+            <tr><th>事项名称</th><td>{record.title}</td><th>办理路径</th><td>{handlingPathTitle}</td></tr>
+            <tr><th>事项编号</th><td colSpan={3}>{record.id}</td></tr>
+            <tr><th>事项来源</th><td colSpan={3}>{record.source}</td></tr>
+            <tr><th>事项说明</th><td colSpan={3}>{record.description || "未填写"}</td></tr>
+            <tr><th>建档时间</th><td>{formatTime(record.createdAt)}</td><th>最近更新</th><td>{formatTime(record.updatedAt)}</td></tr>
+            <tr><th>流程进度</th><td>{completedCount} / {totalCount} 步已完成</td><th>附件数量</th><td>{attachments.length} 份</td></tr>
+          </tbody></table>
+        </section>
+
+        <section className="audit-document-section">
+          <h2>二、办理流程与材料清单</h2>
+          {record.steps.map((step, index) => {
+            const isCurrent = currentStep?.id === step.id;
+            return (
+              <section className="audit-process-step" key={step.id}>
+                <header className="audit-process-heading">
+                  <h3>{index + 1}. {step.stageTitle} · {step.title}</h3>
+                  <strong>{statusText(step.status === "completed", isCurrent)}</strong>
+                </header>
+                <p className="audit-guidance"><b>办理提示：</b>{step.guidance}</p>
+                <p className="audit-record"><b>办理记录：</b>{step.note || "未填写"}</p>
+                {step.status === "completed" && <p className="audit-meta">完成时间：{formatTime(step.completedAt)}　办理人：{step.completedBy || "未记录"}</p>}
+                {step.humanReview && <p className="audit-meta">人工确认：{step.humanReview.decision === "approved" ? "确认通过" : "退回补充"}　确认人：{step.humanReview.reviewer}　时间：{formatTime(step.humanReview.reviewedAt)}{step.humanReview.comment ? `　意见：${step.humanReview.comment}` : ""}</p>}
+                <div className="audit-step-attachments"><b>办理依据材料（{step.attachments.length} 份）</b>{renderAttachments(step.attachments)}</div>
+                {step.procurementSteps?.map((procurementStep, procurementIndex) => {
+                  const isCurrentProcurement = isCurrent && procurementSteps.find((item) => item.status !== "completed")?.id === procurementStep.id;
+                  return (
+                    <section className="audit-procurement-step" key={procurementStep.id}>
+                      <header className="audit-process-heading">
+                        <h4>{index + 1}.{procurementIndex + 1} {procurementStep.title}</h4>
+                        <strong>{statusText(procurementStep.status === "completed", isCurrentProcurement)}</strong>
+                      </header>
+                      <p className="audit-guidance"><b>办理提示：</b>{procurementStep.guidance}</p>
+                      <p className="audit-record"><b>办理记录：</b>{procurementStep.note || "未填写"}</p>
+                      {procurementStep.status === "completed" && <p className="audit-meta">完成时间：{formatTime(procurementStep.completedAt)}　办理人：{procurementStep.completedBy || "未记录"}</p>}
+                      <div className="audit-step-attachments"><b>本步骤附件（{procurementStep.attachments?.length ?? 0} 份）</b>{renderAttachments(procurementStep.attachments ?? [])}</div>
+                    </section>
+                  );
+                })}
+              </section>
+            );
+          })}
+        </section>
+
+        <section className="audit-document-section">
+          <h2>三、送审核对</h2>
+          <ul className="audit-review-checklist">
+            <li><span>□</span>事项来源、办理记录及流程状态与实际情况一致</li>
+            <li><span>□</span>纸质材料或电子附件齐全，且与本清单逐项核对</li>
+            <li><span>□</span>需人工确认的事项已由工作人员核验并签署意见</li>
+          </ul>
+          <table className="audit-signature-table"><tbody>
+            <tr><th>送审单位（盖章）</th><th>经办人</th><th>送审日期</th></tr>
+            <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+            <tr><th colSpan={3}>审核意见</th></tr>
+            <tr><td colSpan={3}>&nbsp;</td></tr>
+          </tbody></table>
+        </section>
+        <p className="audit-document-note">本清单根据系统当前记录整理生成，仅供送审整理和打印核对；请与原始凭证、附件原件及单位档案要求核验。附件目录不包含附件文件本身，原件请另行提供或按单位要求归档。</p>
+      </article>
     </div>
   );
 }
