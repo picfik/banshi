@@ -314,7 +314,8 @@ textarea::placeholder, input::placeholder { color: #b3bdb5; }
 .procurement-step-list li.done { background: #f4f8f3; }
 .procurement-step-mark { width: 29px; height: 29px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid #d7e1d6; border-radius: 50%; color: #697d6c; font-size: 16px; }
 .procurement-step-list li.current .procurement-step-mark,.procurement-step-list li.done .procurement-step-mark { border-color: #598b66; color: #fff; background: #598b66; }
-.procurement-step-list li > div { display: grid; gap: 5px; }
+.procurement-step-body { flex: 1; min-width: 0; display: grid; gap: 5px; }
+.procurement-step-body .materials-head { margin: 10px 0 6px; }
 .procurement-step-list strong { color: #3a5142; font-size: 16px; }
 .procurement-step-list small { color: #75847a; font-size: 16px; line-height: 1.7; }
 .procurement-record { margin-top: 16px; padding-top: 15px; border-top: 1px solid #e2e9e1; }

@@ -1,4 +1,4 @@
-import type { Analysis, CaseRecord, HandlingPath, ProcurementMode, Stage, Step } from "./types";
+import type { Analysis, CaseRecord, HandlingPath, ProcurementMode, ProcurementStep, Stage, Step } from "./types";
 import { getObjectKey, getOssClient, signOssObject } from "./oss";
 import { ApiError } from "./api-error";
 import { getDefaultAiPreferences, type AiPreferences } from "./ai";
@@ -155,6 +155,9 @@ async function ensureLoaded(): Promise<void> {
           record.handlingPath ??= null;
           const processStep = record.steps?.find((step) => step.id === "process-handle");
           if (processStep && !Array.isArray(processStep.procurementSteps)) processStep.procurementSteps = [];
+          for (const procurementStep of processStep?.procurementSteps ?? []) {
+            if (!Array.isArray(procurementStep.attachments)) procurementStep.attachments = [];
+          }
         });
         remote.sync = { status: "success", message: "已从 OSS 读取最新数据", updatedAt: new Date().toISOString() };
         data = remote;
@@ -223,6 +226,22 @@ function getStep(record: StoredCase, stepId: string): Step {
   return step;
 }
 
+function getAttachmentOwner(record: StoredCase, step: Step, procurementStepId: string | null): Step | ProcurementStep {
+  if (!procurementStepId) return step;
+  if (step.id !== "process-handle") error(404, "PROCUREMENT_STEP_NOT_FOUND", "未找到该采购步骤");
+  const procurementStep = step.procurementSteps?.find((item) => item.id === procurementStepId);
+  if (!procurementStep) error(404, "PROCUREMENT_STEP_NOT_FOUND", "未找到该采购步骤");
+  procurementStep.attachments ??= [];
+  return procurementStep;
+}
+
+function allStoredAttachments(record: StoredCase): StoredAttachment[] {
+  return record.steps.flatMap((step) => [
+    ...(step.attachments as StoredAttachment[]),
+    ...(step.procurementSteps ?? []).flatMap((procurementStep) => (procurementStep.attachments ?? []) as StoredAttachment[]),
+  ]);
+}
+
 function currentStep(record: StoredCase): Step | null {
   return record.steps.find((step) => step.status !== "completed") ?? null;
 }
@@ -233,6 +252,12 @@ function publicCase(record: StoredCase): CaseRecord {
     steps: record.steps.map((step) => ({
       ...step,
       attachments: (step.attachments as StoredAttachment[]).map(({ extractedText: _text, localPath: _path, ...attachment }) => attachment),
+      ...(Array.isArray(step.procurementSteps) ? {
+        procurementSteps: step.procurementSteps.map((procurementStep) => ({
+          ...procurementStep,
+          attachments: ((procurementStep.attachments ?? []) as StoredAttachment[]).map(({ extractedText: _text, localPath: _path, ...attachment }) => attachment),
+        })),
+      } : {}),
     })),
   };
 }
@@ -274,6 +299,7 @@ function createProcurementSteps(mode: ProcurementMode) {
   return mode.steps.map((step) => ({
     id: crypto.randomUUID(), templateId: step.id, title: step.title, guidance: step.guidance,
     status: "pending" as const, note: "", completedAt: null, completedBy: null,
+    attachments: [],
   }));
 }
 
@@ -363,6 +389,10 @@ function search(query: string) {
       for (const item of step.procurementSteps ?? []) {
         add(record, step, `采购步骤：${item.title}`, item.note);
         add(record, step, "采购步骤名称", item.title);
+        for (const attachment of (item.attachments ?? []) as StoredAttachment[]) {
+          add(record, step, "采购步骤材料", attachment.filename);
+          add(record, step, "采购步骤材料文本", attachment.extractedText);
+        }
       }
     }
   }
@@ -384,7 +414,9 @@ function setStepNote(record: StoredCase, step: Step, body: Record<string, unknow
     const mode = currentData().settings.procurementModes.find((item) => item.id === selectedPath!.id);
     if (selectedPath.procurement && (!mode || mode.steps.length === 0)) error(409, "PROCUREMENT_MODE_UNCONFIGURED", "该采购模式尚未配置办理步骤，请先到流程设置页完成配置");
     const nested = record.steps.find((item) => item.id === "process-handle")?.procurementSteps ?? [];
-    if (record.handlingPath && record.handlingPath !== selectedPath.id && nested.some((item) => item.status === "completed" || item.note.trim())) {
+    if (record.handlingPath && record.handlingPath !== selectedPath.id && nested.some((item) =>
+      item.status === "completed" || item.note.trim() || item.attachments?.length,
+    )) {
       error(409, "HANDLING_PATH_LOCKED", "采购办理已开始，不能更换办理路径；如需变更请按单位流程处理");
     }
   }
@@ -483,9 +515,9 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
   }
   if (segments.length === 3 && method === "DELETE") {
     const record = getCase(segments[2]);
-    const keys = [...new Set(record.steps.flatMap((step) => step.attachments.map((item) => item.objectKey)))];
+    const keys = [...new Set(allStoredAttachments(record).map((item) => item.objectKey))];
     const removableKeys = keys.filter((key) => !currentData().cases.some((other) =>
-      other.id !== record.id && other.steps.some((step) => step.attachments.some((item) => item.objectKey === key)),
+      other.id !== record.id && allStoredAttachments(other).some((item) => item.objectKey === key),
     ));
     const previousCases = currentData().cases;
     const auditLength = currentData().audit.length;
@@ -623,15 +655,15 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
   if (resource === "steps" && segments.length === 6 && segments[5] === "attachments" && method === "POST") {
     const step = getStep(record, segments[4]);
     requireCurrent(record, step);
+    const attachmentOwner = getAttachmentOwner(record, step, parsedUrl.searchParams.get("procurementStepId"));
     if (!(options.body instanceof FormData)) error(400, "FILE_REQUIRED", "请选择要上传的材料");
     const file = options.body.get("file");
     if (!(file instanceof File)) error(400, "FILE_REQUIRED", "请选择要上传的材料");
     if (!isSupportedAttachmentName(file.name)) error(400, "UNSUPPORTED_FILE_TYPE", "不支持此文件格式，请选择文档或压缩文件");
     if (file.size > MAX_FILE_SIZE) error(400, "LIMIT_FILE_SIZE", "单个文件最大 100 MB");
     const filename = file.name.replace(/[^\p{L}\p{N}._ -]/gu, "_").slice(0, 120) || "attachment";
-    const shared = currentData().cases.flatMap((item) => item.steps.flatMap((candidate) =>
-      candidate.attachments as StoredAttachment[],
-    )).find((item) => item.filename === filename && item.size === file.size);
+    const shared = currentData().cases.flatMap(allStoredAttachments)
+      .find((item) => item.filename === filename && item.size === file.size);
     const id = crypto.randomUUID();
     const key = shared?.objectKey ?? getObjectKey(`attachments/${record.id}/${id}`);
     if (!shared) {
@@ -672,37 +704,43 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
       ),
       analysis: shared?.analysis ?? null,
     };
-    step.attachments.push(attachment);
+    attachmentOwner.attachments.push(attachment);
     updateRecord(record);
-    addAudit("attachment_uploaded", record.id, { stepId: step.id, attachmentId: id });
+    addAudit("attachment_uploaded", record.id, {
+      stepId: step.id,
+      ...(attachmentOwner !== step ? { procurementStepId: attachmentOwner.id } : {}),
+      attachmentId: id,
+    });
     return { attachment, case: publicCase(record), sync: await save() };
   }
   if (resource === "steps" && segments.length === 7 && segments[5] === "attachments" && method === "DELETE") {
     const step = getStep(record, segments[4]);
-    const attachment = step.attachments.find((item) => item.id === segments[6]);
+    const attachmentOwner = getAttachmentOwner(record, step, parsedUrl.searchParams.get("procurementStepId"));
+    const attachment = attachmentOwner.attachments.find((item) => item.id === segments[6]);
     if (!attachment) error(404, "ATTACHMENT_NOT_FOUND", "未找到该材料");
     if (body.confirm !== true) error(400, "CONFIRM_REQUIRED", "删除材料需要明确确认");
     const referenceCount = currentData().cases.reduce((count, item) =>
-      count + item.steps.reduce((stepCount, candidate) =>
-        stepCount + candidate.attachments.filter((entry) => entry.objectKey === attachment.objectKey).length, 0), 0);
+      count + allStoredAttachments(item).filter((entry) => entry.objectKey === attachment.objectKey).length, 0);
     const referencedByOtherCase = currentData().cases.some((other) =>
-      other.id !== record.id && other.steps.some((candidate) =>
-        candidate.attachments.some((item) => item.objectKey === attachment.objectKey),
-      ),
+      other.id !== record.id && allStoredAttachments(other).some((item) => item.objectKey === attachment.objectKey),
     );
     if (referencedByOtherCase) error(409, "ATTACHMENT_SHARED", "该附件还关联其他事项，不能删除");
     const sameCaseReferences = referenceCount - 1;
-    const previousAttachments = step.attachments;
+    const previousAttachments = attachmentOwner.attachments;
     const previousUpdatedAt = record.updatedAt;
     const auditLength = currentData().audit.length;
-    step.attachments = step.attachments.filter((item) => item.id !== attachment.id);
+    attachmentOwner.attachments = attachmentOwner.attachments.filter((item) => item.id !== attachment.id);
     updateRecord(record);
-    addAudit("attachment_deleted", record.id, { stepId: step.id, attachmentId: attachment.id });
+    addAudit("attachment_deleted", record.id, {
+      stepId: step.id,
+      ...(attachmentOwner !== step ? { procurementStepId: attachmentOwner.id } : {}),
+      attachmentId: attachment.id,
+    });
     let sync: SyncStatus;
     try {
       sync = await save();
     } catch (reason) {
-      step.attachments = previousAttachments;
+      attachmentOwner.attachments = previousAttachments;
       record.updatedAt = previousUpdatedAt;
       currentData().audit.length = auditLength;
       throw reason;
@@ -719,13 +757,18 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
   }
   if (resource === "steps" && segments.length === 8 && segments[5] === "attachments" && segments[7] === "analyze" && method === "POST") {
     const step = getStep(record, segments[4]);
-    const attachment = step.attachments.find((item) => item.id === segments[6]) as StoredAttachment | undefined;
+    const attachmentOwner = getAttachmentOwner(record, step, parsedUrl.searchParams.get("procurementStepId"));
+    const attachment = attachmentOwner.attachments.find((item) => item.id === segments[6]) as StoredAttachment | undefined;
     if (!attachment) error(404, "ATTACHMENT_NOT_FOUND", "未找到该材料");
     if (!body.analysis || typeof body.analysis !== "object") error(400, "INVALID_ANALYSIS", "AI 分析结果无效");
     attachment.analysis = body.analysis as Analysis;
     if (typeof body.extractedText === "string") attachment.extractedText = body.extractedText.slice(0, 24000);
     updateRecord(record);
-    addAudit("attachment_analyzed", record.id, { stepId: step.id, attachmentId: attachment.id });
+    addAudit("attachment_analyzed", record.id, {
+      stepId: step.id,
+      ...(attachmentOwner !== step ? { procurementStepId: attachmentOwner.id } : {}),
+      attachmentId: attachment.id,
+    });
     return { analysis: attachment.analysis, sync: await save() };
   }
   error(404, "NOT_FOUND", "请求的功能不存在");

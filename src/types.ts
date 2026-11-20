@@ -37,6 +37,7 @@ export type ProcurementStep = {
   note: string;
   completedAt: string | null;
   completedBy: string | null;
+  attachments: Attachment[];
 };
 
 export type ProcurementMode = {

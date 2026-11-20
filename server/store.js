@@ -158,6 +158,7 @@ export function createProcurementSteps(mode) {
     note: "",
     completedAt: null,
     completedBy: null,
+    attachments: [],
   }));
 }
 
@@ -207,6 +208,12 @@ export function createDataStore(filePath) {
         if (handleStep && !Array.isArray(handleStep.procurementSteps)) {
           handleStep.procurementSteps = [];
           migrated = true;
+        }
+        for (const procurementStep of handleStep?.procurementSteps ?? []) {
+          if (!Array.isArray(procurementStep.attachments)) {
+            procurementStep.attachments = [];
+            migrated = true;
+          }
         }
       }
       if (migrated) await save();

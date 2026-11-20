@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import { api, getAttachmentUrl, jsonBody } from "./api";
 import { aiProviders, analyzeAttachment, getDefaultAiPreferences, type AiPreferences } from "./ai";
-import type { CaseRecord, HandlingPath, ProcurementMode, Stage, Step, SyncStatus } from "./types";
+import type { Attachment, CaseRecord, HandlingPath, ProcurementMode, Stage, Step, SyncStatus } from "./types";
 import { MAX_ATTACHMENT_SIZE_BYTES, SUPPORTED_ATTACHMENT_EXTENSIONS } from "../shared/attachments.js";
 
 type CaseResponse = { case: CaseRecord; sync: SyncStatus };
@@ -68,7 +68,7 @@ function App() {
   const [searching, setSearching] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState("");
+  const [uploadStatus, setUploadStatus] = useState<{ targetId: string; message: string } | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [online, setOnline] = useState(navigator.onLine);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
@@ -294,7 +294,7 @@ function App() {
     }));
   }
 
-  async function uploadFiles(event: ChangeEvent<HTMLInputElement>) {
+  async function uploadFiles(event: ChangeEvent<HTMLInputElement>, procurementStepId?: string) {
     if (!selectedCase || !activeStep) return;
     const input = event.currentTarget;
     const files = Array.from(input.files ?? []);
@@ -302,15 +302,19 @@ function App() {
     input.value = "";
     const caseId = selectedCase.id;
     const stepId = activeStep.id;
+    const targetId = procurementStepId ? `${caseId}:procurement:${procurementStepId}` : `${caseId}:step:${stepId}`;
+    const uploadUrl = procurementStepId
+      ? `/api/cases/${caseId}/steps/${stepId}/attachments?procurementStepId=${encodeURIComponent(procurementStepId)}`
+      : `/api/cases/${caseId}/steps/${stepId}/attachments`;
     let uploadedCount = 0;
     const failures: string[] = [];
 
     setBusy(true);
     setError("");
-    setUploadStatus("");
+    setUploadStatus({ targetId, message: "" });
     try {
       for (const [index, file] of files.entries()) {
-        setUploadStatus(`正在上传 ${index + 1}/${files.length}：${file.name}`);
+        setUploadStatus({ targetId, message: `正在上传 ${index + 1}/${files.length}：${file.name}` });
         if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
           failures.push(`${file.name}：超过 100 MB`);
           continue;
@@ -318,7 +322,7 @@ function App() {
         const body = new FormData();
         body.set("file", file);
         try {
-          await api(`/api/cases/${caseId}/steps/${stepId}/attachments`, { method: "POST", body });
+          await api(uploadUrl, { method: "POST", body });
           uploadedCount += 1;
         } catch (reason) {
           failures.push(`${file.name}：${reason instanceof Error ? reason.message : "上传失败"}`);
@@ -333,7 +337,7 @@ function App() {
           setSelectedCase((current) => current?.id === caseId ? updatedCase : current);
         }
       }
-      setUploadStatus(`上传完成：成功 ${uploadedCount} 个，失败 ${failures.length} 个`);
+      setUploadStatus({ targetId, message: `上传完成：成功 ${uploadedCount} 个，失败 ${failures.length} 个` });
       if (failures.length > 0) {
         const shownFailures = failures.slice(0, 3).join("；");
         setError(`以下附件上传失败：${shownFailures}${failures.length > 3 ? `；另有 ${failures.length - 3} 个失败` : ""}`);
@@ -345,14 +349,15 @@ function App() {
     }
   }
 
-  async function deleteAttachment(attachmentId: string) {
+  async function deleteAttachment(attachmentId: string, procurementStepId?: string) {
     if (!selectedCase || !activeStep) return;
     if (!window.confirm("确定删除此材料？如仍关联其他事项，删除将被拒绝。此操作会写入审计记录。")) return;
+    const procurementQuery = procurementStepId ? `?procurementStepId=${encodeURIComponent(procurementStepId)}` : "";
     setBusy(true);
     setError("");
     try {
       const result = await api<{ cleanupError: string | null }>(
-        `/api/cases/${selectedCase.id}/steps/${activeStep.id}/attachments/${attachmentId}`,
+        `/api/cases/${selectedCase.id}/steps/${activeStep.id}/attachments/${attachmentId}${procurementQuery}`,
         { method: "DELETE", body: jsonBody({ confirm: true }) },
       );
       await refreshCases(selectedId);
@@ -366,7 +371,7 @@ function App() {
     }
   }
 
-  async function analyzeCaseAttachment(attachment: CaseRecord["steps"][number]["attachments"][number]) {
+  async function analyzeCaseAttachment(attachment: Attachment, procurementStepId?: string) {
     if (!selectedCase || !activeStep || !config?.aiEnabled) {
       setError("请先在 AI 设置中选择服务并填写 API Key");
       return;
@@ -377,8 +382,13 @@ function App() {
     }
     if (!window.confirm("附件文本将发送给当前选择的 AI 服务进行分析。请确认已获授权，且材料符合单位的数据处理要求。")) return;
     await runStepAction(async () => {
-      const result = await analyzeAttachment(attachment, activeStep, config.aiPreferences);
-      await api(`/api/cases/${selectedCase.id}/steps/${activeStep.id}/attachments/${attachment.id}/analyze`, {
+      const procurementStep = procurementStepId
+        ? activeStep.procurementSteps?.find((item) => item.id === procurementStepId)
+        : null;
+      const analysisStep = procurementStep ? { ...activeStep, title: procurementStep.title, guidance: procurementStep.guidance } : activeStep;
+      const result = await analyzeAttachment(attachment, analysisStep, config.aiPreferences);
+      const procurementQuery = procurementStepId ? `?procurementStepId=${encodeURIComponent(procurementStepId)}` : "";
+      await api(`/api/cases/${selectedCase.id}/steps/${activeStep.id}/attachments/${attachment.id}/analyze${procurementQuery}`, {
         method: "POST",
         body: jsonBody(result),
       });
@@ -547,6 +557,34 @@ function App() {
       previewWindow?.close();
       handleError(reason);
     }
+  }
+
+  function renderAttachmentList(attachments: Attachment[], procurementStepId?: string) {
+    if (attachments.length === 0) return null;
+    return (
+      <div className="attachment-list">
+        {attachments.map((attachment) => {
+          const canAnalyze = attachment.contentType === "application/pdf" || attachment.contentType === "text/plain";
+          const sizeLabel = attachment.size >= 1024 * 1024
+            ? `${(attachment.size / (1024 * 1024)).toFixed(1)} MB`
+            : `${(attachment.size / 1024).toFixed(0)} KB`;
+          return (
+            <article className="attachment-card" key={attachment.id}>
+              <span className="file-icon">{attachment.contentType === "application/pdf" ? "PDF" : "文件"}</span>
+              <div className="attachment-info">
+                <button className="attachment-link" type="button" onClick={() => void openAttachment(attachment.objectKey)}>{attachment.filename}</button>
+                <small>{sizeLabel} · {attachment.syncMessage}</small>
+              </div>
+              <div className="attachment-actions">
+                <button className="text-button" disabled={busy || !online || !config?.aiEnabled || !canAnalyze} title={!canAnalyze ? "AI 解读目前仅支持 PDF 和纯文本文件" : config?.aiEnabled ? "使用配置的 AI 解读附件" : "请先配置 AI 服务"} onClick={() => void analyzeCaseAttachment(attachment, procurementStepId)}>{canAnalyze ? attachment.analysis ? "重新解读" : "AI 解读" : "暂不可解读"}</button>
+                <button className="icon-button danger-icon" aria-label="删除材料" disabled={busy || !online} onClick={() => void deleteAttachment(attachment.id, procurementStepId)}>×</button>
+              </div>
+              {attachment.analysis && <AnalysisCard analysis={attachment.analysis} />}
+            </article>
+          );
+        })}
+      </div>
+    );
   }
 
   if (loading) return <main className="loading-screen"><span className="spinner" />正在加载工作台…</main>;
@@ -761,7 +799,21 @@ function App() {
                             {(activeStep.procurementSteps ?? []).map((step, index) => (
                               <li key={step.id} className={step.status === "completed" ? "done" : step.id === currentProcurementStep?.id && currentStep?.id === activeStep.id ? "current" : ""}>
                                 <span className="procurement-step-mark">{step.status === "completed" ? "✓" : index + 1}</span>
-                                <div><strong>{step.title}</strong><small>{step.status === "completed" ? `由 ${step.completedBy} 完成 · ${formatTime(step.completedAt)}` : step.guidance}</small></div>
+                                <div className="procurement-step-body">
+                                  <div><strong>{step.title}</strong><small>{step.status === "completed" ? `由 ${step.completedBy} 完成 · ${formatTime(step.completedAt)}` : step.guidance}</small></div>
+                                  <div className="materials-head"><div><h3>本步骤相关附件</h3><span>可多选并自动上传；单个文件最大 100 MB</span></div><span>{step.attachments?.length ?? 0} 份</span></div>
+                                  <div className="upload-row">
+                                    <input
+                                      type="file"
+                                      accept={SUPPORTED_ATTACHMENT_EXTENSIONS.join(",")}
+                                      multiple
+                                      disabled={busy || !online || currentStep?.id !== activeStep.id || activeStep.status === "completed"}
+                                      onChange={(event) => void uploadFiles(event, step.id)}
+                                    />
+                                  </div>
+                                  {uploadStatus?.targetId === `${selectedCase?.id}:procurement:${step.id}` && uploadStatus.message && <p className="hint-text upload-status" role="status">{uploadStatus.message}</p>}
+                                  {renderAttachmentList(step.attachments ?? [], step.id)}
+                                </div>
                               </li>
                             ))}
                           </ol>
@@ -794,32 +846,9 @@ function App() {
                           <div className="upload-row">
                             <input name="file" type="file" accept={SUPPORTED_ATTACHMENT_EXTENSIONS.join(",")} multiple disabled={busy || !online} onChange={(event) => void uploadFiles(event)} />
                           </div>
-                          {uploadStatus && <p className="hint-text upload-status" role="status">{uploadStatus}</p>}
+                          {uploadStatus?.targetId === `${selectedCase.id}:step:${activeStep.id}` && uploadStatus.message && <p className="hint-text upload-status" role="status">{uploadStatus.message}</p>}
                           {!online && <p className="hint-text">离线时不支持上传或编辑；恢复网络后请重新操作。</p>}
-                          {activeStep.attachments.length > 0 && (
-                            <div className="attachment-list">
-                              {activeStep.attachments.map((attachment) => {
-                                const canAnalyze = attachment.contentType === "application/pdf" || attachment.contentType === "text/plain";
-                                const sizeLabel = attachment.size >= 1024 * 1024
-                                  ? `${(attachment.size / (1024 * 1024)).toFixed(1)} MB`
-                                  : `${(attachment.size / 1024).toFixed(0)} KB`;
-                                return (
-                                  <article className="attachment-card" key={attachment.id}>
-                                    <span className="file-icon">{attachment.contentType === "application/pdf" ? "PDF" : "文件"}</span>
-                                    <div className="attachment-info">
-                                      <button className="attachment-link" type="button" onClick={() => void openAttachment(attachment.objectKey)}>{attachment.filename}</button>
-                                      <small>{sizeLabel} · {attachment.syncMessage}</small>
-                                    </div>
-                                    <div className="attachment-actions">
-                                      <button className="text-button" disabled={busy || !online || !config?.aiEnabled || !canAnalyze} title={!canAnalyze ? "AI 解读目前仅支持 PDF 和纯文本文件" : config?.aiEnabled ? "使用配置的 AI 解读附件" : "请先配置 AI 服务"} onClick={() => void analyzeCaseAttachment(attachment)}>{canAnalyze ? attachment.analysis ? "重新解读" : "AI 解读" : "暂不可解读"}</button>
-                                      <button className="icon-button danger-icon" aria-label="删除材料" disabled={busy || !online} onClick={() => void deleteAttachment(attachment.id)}>×</button>
-                                    </div>
-                                    {attachment.analysis && <AnalysisCard analysis={attachment.analysis} />}
-                                  </article>
-                                );
-                              })}
-                            </div>
-                          )}
+                          {renderAttachmentList(activeStep.attachments)}
                           {activeStep.requiresReview && (
                             <div className="review-box">
                               <div><strong>最终人工确认</strong><p>AI 不会自动确认闭环。请由工作人员核对过程记录与材料。</p></div>

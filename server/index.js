@@ -83,7 +83,12 @@ async function readTextPreview(filePath) {
 
 function publicSync(sync, data) {
   const attachmentFailure = data?.cases.some((record) =>
-    record.steps.some((step) => step.attachments.some((attachment) => attachment.syncStatus === "failed")),
+    record.steps.some((step) =>
+      step.attachments.some((attachment) => attachment.syncStatus === "failed") ||
+      (step.procurementSteps ?? []).some((procurementStep) =>
+        (procurementStep.attachments ?? []).some((attachment) => attachment.syncStatus === "failed"),
+      ),
+    ),
   );
   if (sync.status === "success" && attachmentFailure) {
     return { status: "failed", message: "部分附件 OSS 同步失败；可重试同步", updatedAt: sync.updatedAt ?? null };
@@ -104,9 +109,21 @@ function publicCase(record) {
     steps: record.steps.map((step) => ({
       ...step,
       attachments: step.attachments.map(publicAttachment),
-      ...(Array.isArray(step.procurementSteps) ? { procurementSteps: step.procurementSteps } : {}),
+      ...(Array.isArray(step.procurementSteps) ? {
+        procurementSteps: step.procurementSteps.map((procurementStep) => ({
+          ...procurementStep,
+          attachments: (procurementStep.attachments ?? []).map(publicAttachment),
+        })),
+      } : {}),
     })),
   };
+}
+
+function allAttachments(record) {
+  return record.steps.flatMap((step) => [
+    ...step.attachments,
+    ...(step.procurementSteps ?? []).flatMap((procurementStep) => procurementStep.attachments ?? []),
+  ]);
 }
 
 function validateProcurementModes(input) {
@@ -191,6 +208,10 @@ function searchCases(data, query) {
       for (const procurementStep of step.procurementSteps ?? []) {
         addMatch(record, step, `采购步骤：${procurementStep.title}`, procurementStep.note);
         addMatch(record, step, "采购步骤名称", procurementStep.title);
+        for (const attachment of procurementStep.attachments ?? []) {
+          addMatch(record, step, "采购步骤材料", attachment.filename);
+          addMatch(record, step, "采购步骤材料文本", attachment.extractedText);
+        }
       }
     }
   }
@@ -414,7 +435,9 @@ export async function createApp({
         return sendError(res, 409, "PROCUREMENT_MODE_UNCONFIGURED", "该采购模式尚未配置办理步骤，请先到流程设置页完成配置");
       }
       const nestedSteps = getStep(record, "process-handle")?.procurementSteps ?? [];
-      const hasProgress = nestedSteps.some((item) => item.status === "completed" || item.note.trim());
+      const hasProgress = nestedSteps.some((item) =>
+        item.status === "completed" || item.note.trim() || item.attachments?.length,
+      );
       if (record.handlingPath && record.handlingPath !== handlingPath.id && hasProgress) {
         return sendError(res, 409, "HANDLING_PATH_LOCKED", "采购办理已开始，不能更换办理路径；如需变更请按单位流程处理");
       }
@@ -610,6 +633,12 @@ export async function createApp({
     if (!record) return sendError(res, 404, "CASE_NOT_FOUND", "未找到该事项");
     const step = getStep(record, req.params.stepId);
     if (!step) return sendError(res, 404, "STEP_NOT_FOUND", "未找到该办理步骤");
+    if (req.query.procurementStepId && (
+      step.id !== "process-handle" ||
+      !step.procurementSteps?.some((item) => item.id === req.query.procurementStepId)
+    )) {
+      return sendError(res, 404, "PROCUREMENT_STEP_NOT_FOUND", "未找到该采购步骤");
+    }
     if (step.status === "completed" || getCurrentStep(record)?.id !== step.id) {
       return sendError(res, 409, "STEP_NOT_CURRENT", "只有当前待办步骤可以上传材料");
     }
@@ -628,6 +657,14 @@ export async function createApp({
     if (step.status === "completed" || getCurrentStep(record)?.id !== step.id) {
       if (req.file) await removeTemporaryUpload(req.file.path);
       return sendError(res, 409, "STEP_NOT_CURRENT", "只有当前待办步骤可以上传材料");
+    }
+    const procurementStepId = req.query.procurementStepId;
+    const procurementStep = procurementStepId
+      ? step.procurementSteps?.find((item) => item.id === procurementStepId)
+      : null;
+    if (procurementStepId && (step.id !== "process-handle" || !procurementStep)) {
+      if (req.file) await removeTemporaryUpload(req.file.path);
+      return sendError(res, 404, "PROCUREMENT_STEP_NOT_FOUND", "未找到该采购步骤");
     }
     if (!req.file) return sendError(res, 400, "FILE_REQUIRED", "请选择要上传的材料");
     const id = req.file.filename;
@@ -673,9 +710,13 @@ export async function createApp({
       analysis: null,
     };
     await dataStore.transaction(async (data) => {
-      step.attachments.push(attachment);
+      (procurementStep ?? step).attachments.push(attachment);
       record.updatedAt = new Date().toISOString();
-      addAudit(data, req.username, "attachment_uploaded", record.id, { stepId: step.id, attachmentId: id });
+      addAudit(data, req.username, "attachment_uploaded", record.id, {
+        stepId: step.id,
+        ...(procurementStep ? { procurementStepId: procurementStep.id } : {}),
+        attachmentId: id,
+      });
       await dataStore.save();
       await syncJson();
     });
@@ -684,7 +725,7 @@ export async function createApp({
 
   app.get("/api/cases/:caseId/attachments/:attachmentId", async (req, res) => {
     const record = getCase(req.params.caseId);
-    const attachment = record?.steps.flatMap((step) => step.attachments).find((item) => item.id === req.params.attachmentId);
+    const attachment = record && allAttachments(record).find((item) => item.id === req.params.attachmentId);
     if (!attachment) return sendError(res, 404, "ATTACHMENT_NOT_FOUND", "未找到该材料");
     res.setHeader("Content-Type", attachment.contentType);
     res.setHeader(
@@ -708,7 +749,15 @@ export async function createApp({
     const record = getCase(req.params.caseId);
     if (!record) return sendError(res, 404, "CASE_NOT_FOUND", "未找到该事项");
     const step = getStep(record, req.params.stepId);
-    const attachment = step?.attachments.find((item) => item.id === req.params.attachmentId);
+    const procurementStepId = req.query.procurementStepId;
+    const procurementStep = procurementStepId
+      ? step?.procurementSteps?.find((item) => item.id === procurementStepId)
+      : null;
+    if (procurementStepId && (!step || step.id !== "process-handle" || !procurementStep)) {
+      return sendError(res, 404, "PROCUREMENT_STEP_NOT_FOUND", "未找到该采购步骤");
+    }
+    const attachmentOwner = procurementStep ?? step;
+    const attachment = attachmentOwner?.attachments.find((item) => item.id === req.params.attachmentId);
     if (!attachment) return sendError(res, 404, "ATTACHMENT_NOT_FOUND", "未找到该材料");
     if (req.body?.confirm !== true) return sendError(res, 400, "CONFIRM_REQUIRED", "删除材料需要明确确认");
     try {
@@ -718,9 +767,13 @@ export async function createApp({
       return sendError(res, 502, "OSS_DELETE_FAILED", "OSS 删除失败，材料记录未变更");
     }
     await dataStore.transaction(async (data) => {
-      step.attachments = step.attachments.filter((item) => item.id !== attachment.id);
+      attachmentOwner.attachments = attachmentOwner.attachments.filter((item) => item.id !== attachment.id);
       record.updatedAt = new Date().toISOString();
-      addAudit(data, req.username, "attachment_deleted", record.id, { stepId: step.id, attachmentId: attachment.id });
+      addAudit(data, req.username, "attachment_deleted", record.id, {
+        stepId: step.id,
+        ...(procurementStep ? { procurementStepId: procurementStep.id } : {}),
+        attachmentId: attachment.id,
+      });
       await dataStore.save();
       await syncJson();
     });
@@ -733,14 +786,26 @@ export async function createApp({
     if (!record) return sendError(res, 404, "CASE_NOT_FOUND", "未找到该事项");
     const step = getStep(record, req.params.stepId);
     if (!step) return sendError(res, 404, "STEP_NOT_FOUND", "未找到该办理步骤");
-    const attachment = step.attachments.find((item) => item.id === req.params.attachmentId);
+    const procurementStepId = req.query.procurementStepId;
+    const procurementStep = procurementStepId
+      ? step.procurementSteps?.find((item) => item.id === procurementStepId)
+      : null;
+    if (procurementStepId && (step.id !== "process-handle" || !procurementStep)) {
+      return sendError(res, 404, "PROCUREMENT_STEP_NOT_FOUND", "未找到该采购步骤");
+    }
+    const attachmentOwner = procurementStep ?? step;
+    const attachment = attachmentOwner.attachments.find((item) => item.id === req.params.attachmentId);
     if (!attachment) return sendError(res, 404, "ATTACHMENT_NOT_FOUND", "未找到该材料");
     try {
-      const analysis = await aiService.analyze(attachment.extractedText, step);
+      const analysis = await aiService.analyze(attachment.extractedText, procurementStep ?? step);
       await dataStore.transaction(async (data) => {
         attachment.analysis = analysis;
         record.updatedAt = new Date().toISOString();
-        addAudit(data, req.username, "attachment_analyzed", record.id, { stepId: step.id, attachmentId: attachment.id });
+        addAudit(data, req.username, "attachment_analyzed", record.id, {
+          stepId: step.id,
+          ...(procurementStep ? { procurementStepId: procurementStep.id } : {}),
+          attachmentId: attachment.id,
+        });
         await dataStore.save();
         await syncJson();
       });
@@ -762,7 +827,10 @@ export async function createApp({
       }
       for (const record of data.cases) {
         for (const step of record.steps) {
-          for (const attachment of step.attachments) {
+          for (const attachment of [
+            ...step.attachments,
+            ...(step.procurementSteps ?? []).flatMap((procurementStep) => procurementStep.attachments ?? []),
+          ]) {
             if (attachment.syncStatus === "success") continue;
             try {
               await client.putStream(attachment.objectKey, createReadStream(path.join(resolvedUploadDir, attachment.localPath)), {
@@ -788,7 +856,12 @@ export async function createApp({
       await syncJson();
     });
     const failedAttachments = dataStore.data.cases.some((record) =>
-      record.steps.some((step) => step.attachments.some((attachment) => attachment.syncStatus !== "success")),
+      record.steps.some((step) =>
+        step.attachments.some((attachment) => attachment.syncStatus !== "success") ||
+        (step.procurementSteps ?? []).some((procurementStep) =>
+          (procurementStep.attachments ?? []).some((attachment) => attachment.syncStatus !== "success"),
+        ),
+      ),
     );
     if (dataStore.data.sync.status !== "success" || failedAttachments) {
       const state = publicSync(dataStore.data.sync, dataStore.data);

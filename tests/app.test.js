@@ -183,6 +183,54 @@ test("procurement mode steps are configurable, snapshotted, and server-enforced 
   assert.equal((await context.agent.post(`/api/cases/${record.id}/steps/process-handle/complete`).send({})).status, 200);
 });
 
+test("procurement substeps store and manage their own attachments", async (t) => {
+  const context = await setup();
+  t.after(() => rm(context.directory, { recursive: true, force: true }));
+  const record = await newCase(context.agent);
+
+  for (const [stepId, note] of [
+    ["source-register", "登记来源"],
+    ["source-verify", "核实事项"],
+  ]) {
+    assert.equal((await context.agent.patch(`/api/cases/${record.id}/steps/${stepId}`).send({ note })).status, 200);
+    assert.equal((await context.agent.post(`/api/cases/${record.id}/steps/${stepId}/complete`).send({})).status, 200);
+  }
+  await context.agent.patch(`/api/cases/${record.id}/steps/process-assign`).send({
+    note: "已明确承办安排",
+    handlingPath: "direct-delegation",
+  });
+  assert.equal((await context.agent.post(`/api/cases/${record.id}/steps/process-assign/complete`).send({})).status, 200);
+
+  const detail = await context.agent.get(`/api/cases/${record.id}`);
+  const procurementSteps = detail.body.case.steps.find((step) => step.id === "process-handle").procurementSteps;
+  const firstStep = procurementSteps[0];
+  const secondStep = procurementSteps[1];
+  const firstUpload = await context.agent
+    .post(`/api/cases/${record.id}/steps/process-handle/attachments?procurementStepId=${firstStep.id}`)
+    .attach("file", Buffer.from("第一步依据"), { filename: "first.txt", contentType: "text/plain" });
+  const secondUpload = await context.agent
+    .post(`/api/cases/${record.id}/steps/process-handle/attachments?procurementStepId=${secondStep.id}`)
+    .attach("file", Buffer.from("第二步依据"), { filename: "second.txt", contentType: "text/plain" });
+
+  assert.equal(firstUpload.status, 201);
+  assert.equal(secondUpload.status, 201);
+  assert.deepEqual(firstUpload.body.case.steps.find((step) => step.id === "process-handle").attachments, []);
+  const refreshedSteps = firstUpload.body.case.steps.find((step) => step.id === "process-handle").procurementSteps;
+  assert.equal(refreshedSteps[0].attachments[0].filename, "first.txt");
+  assert.equal(refreshedSteps[1].attachments.length, 0);
+  assert.equal(refreshedSteps[0].attachments[0].extractedText, undefined);
+  assert.equal(refreshedSteps[0].attachments[0].localPath, undefined);
+
+  const downloaded = await context.agent.get(`/api/cases/${record.id}/attachments/${firstUpload.body.attachment.id}`);
+  assert.equal(downloaded.status, 200);
+  assert.match(downloaded.headers["content-disposition"], /first\.txt/);
+  const removed = await context.agent
+    .delete(`/api/cases/${record.id}/steps/process-handle/attachments/${firstUpload.body.attachment.id}?procurementStepId=${firstStep.id}`)
+    .send({ confirm: true });
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.case.steps.find((step) => step.id === "process-handle").procurementSteps[0].attachments.length, 0);
+});
+
 test("failed OSS JSON sync is visible and retryable", async (t) => {
   let shouldFail = true;
   const client = {
