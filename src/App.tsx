@@ -1,4 +1,5 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ChangeEvent, FormEvent } from "react";
 import { api, getAttachmentUrl, jsonBody } from "./api";
 import { aiProviders, analyzeAttachment, getDefaultAiPreferences, type AiPreferences } from "./ai";
 import type { CaseRecord, HandlingPath, ProcurementMode, Stage, Step, SyncStatus } from "./types";
@@ -67,6 +68,7 @@ function App() {
   const [searching, setSearching] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState("");
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [online, setOnline] = useState(navigator.onLine);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
@@ -292,22 +294,55 @@ function App() {
     }));
   }
 
-  async function uploadFile(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function uploadFiles(event: ChangeEvent<HTMLInputElement>) {
     if (!selectedCase || !activeStep) return;
-    const input = event.currentTarget.elements.namedItem("file") as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
-    if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
-      setError("单个文件最大 100 MB");
-      return;
+    const input = event.currentTarget;
+    const files = Array.from(input.files ?? []);
+    if (files.length === 0) return;
+    input.value = "";
+    const caseId = selectedCase.id;
+    const stepId = activeStep.id;
+    let uploadedCount = 0;
+    const failures: string[] = [];
+
+    setBusy(true);
+    setError("");
+    setUploadStatus("");
+    try {
+      for (const [index, file] of files.entries()) {
+        setUploadStatus(`正在上传 ${index + 1}/${files.length}：${file.name}`);
+        if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
+          failures.push(`${file.name}：超过 100 MB`);
+          continue;
+        }
+        const body = new FormData();
+        body.set("file", file);
+        try {
+          await api(`/api/cases/${caseId}/steps/${stepId}/attachments`, { method: "POST", body });
+          uploadedCount += 1;
+        } catch (reason) {
+          failures.push(`${file.name}：${reason instanceof Error ? reason.message : "上传失败"}`);
+        }
+      }
+      if (uploadedCount > 0) {
+        const refreshed = await api<CasesResponse>("/api/cases");
+        setCases(refreshed.cases);
+        setSync(refreshed.sync);
+        const updatedCase = refreshed.cases.find((record) => record.id === caseId);
+        if (updatedCase) {
+          setSelectedCase((current) => current?.id === caseId ? updatedCase : current);
+        }
+      }
+      setUploadStatus(`上传完成：成功 ${uploadedCount} 个，失败 ${failures.length} 个`);
+      if (failures.length > 0) {
+        const shownFailures = failures.slice(0, 3).join("；");
+        setError(`以下附件上传失败：${shownFailures}${failures.length > 3 ? `；另有 ${failures.length - 3} 个失败` : ""}`);
+      }
+    } catch (reason) {
+      handleError(reason);
+    } finally {
+      setBusy(false);
     }
-    const body = new FormData();
-    body.set("file", file);
-    await runStepAction(async () => {
-      await api(`/api/cases/${selectedCase.id}/steps/${activeStep.id}/attachments`, { method: "POST", body });
-      input.value = "";
-    });
   }
 
   async function deleteAttachment(attachmentId: string) {
@@ -755,11 +790,11 @@ function App() {
                           <textarea id="step-note" rows={5} value={noteDraft} maxLength={10000} disabled={!online} onChange={(event) => setNoteDraft(event.target.value)} placeholder="记录实际办理情况、依据及需要跟进的问题…" />
                           <div className="textarea-foot"><span>请准确记录事实，敏感信息按单位要求处理。</span><span>{noteDraft.length}/10000</span></div>
 
-                          <div className="materials-head"><div><h3>办理依据材料</h3><span>支持 Office、PDF、文档及压缩文件；单个文件最大 100 MB</span></div><span>{activeStep.attachments.length} 份</span></div>
-                          <form className="upload-row" onSubmit={(event) => void uploadFile(event)}>
-                            <input name="file" type="file" accept={SUPPORTED_ATTACHMENT_EXTENSIONS.join(",")} required disabled={busy || !online} />
-                            <button className="secondary" disabled={busy || !online}>上传材料</button>
-                          </form>
+                          <div className="materials-head"><div><h3>办理依据材料</h3><span>支持多选并自动上传；Office、PDF、文档及压缩文件，单个文件最大 100 MB</span></div><span>{activeStep.attachments.length} 份</span></div>
+                          <div className="upload-row">
+                            <input name="file" type="file" accept={SUPPORTED_ATTACHMENT_EXTENSIONS.join(",")} multiple disabled={busy || !online} onChange={(event) => void uploadFiles(event)} />
+                          </div>
+                          {uploadStatus && <p className="hint-text upload-status" role="status">{uploadStatus}</p>}
                           {!online && <p className="hint-text">离线时不支持上传或编辑；恢复网络后请重新操作。</p>}
                           {activeStep.attachments.length > 0 && (
                             <div className="attachment-list">
