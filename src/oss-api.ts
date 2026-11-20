@@ -2,6 +2,11 @@ import type { Analysis, CaseRecord, HandlingPath, ProcurementMode, Stage, Step }
 import { getObjectKey, getOssClient, signOssObject } from "./oss";
 import { ApiError } from "./api-error";
 import { getDefaultAiPreferences, type AiPreferences } from "./ai";
+import {
+  isSupportedAttachmentName,
+  MAX_ATTACHMENT_SIZE_BYTES,
+  MAX_ATTACHMENT_TEXT_PREVIEW_CHARS,
+} from "../shared/attachments.js";
 
 type AuditEntry = {
   id: string;
@@ -26,7 +31,7 @@ type StoredData = {
 type SyncStatus = StoredData["sync"];
 
 const ACTOR = "用户";
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_FILE_SIZE = MAX_ATTACHMENT_SIZE_BYTES;
 const stages: Stage[] = [
   { id: "source", title: "事项来源", steps: [
     { id: "source-register", title: "登记事项来源", guidance: "记录来文、来电、交办或其他事项来源及接收时间。" },
@@ -621,8 +626,8 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
     if (!(options.body instanceof FormData)) error(400, "FILE_REQUIRED", "请选择要上传的材料");
     const file = options.body.get("file");
     if (!(file instanceof File)) error(400, "FILE_REQUIRED", "请选择要上传的材料");
-    if (!["application/pdf", "text/plain"].includes(file.type)) error(400, "UNSUPPORTED_FILE_TYPE", "仅支持 PDF 和纯文本文件");
-    if (file.size > MAX_FILE_SIZE) error(400, "LIMIT_FILE_SIZE", "单个文件最大 10 MiB");
+    if (!isSupportedAttachmentName(file.name)) error(400, "UNSUPPORTED_FILE_TYPE", "不支持此文件格式，请选择文档或压缩文件");
+    if (file.size > MAX_FILE_SIZE) error(400, "LIMIT_FILE_SIZE", "单个文件最大 100 MB");
     const filename = file.name.replace(/[^\p{L}\p{N}._ -]/gu, "_").slice(0, 120) || "attachment";
     const shared = currentData().cases.flatMap((item) => item.steps.flatMap((candidate) =>
       candidate.attachments as StoredAttachment[],
@@ -631,16 +636,40 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
     const key = shared?.objectKey ?? getObjectKey(`attachments/${record.id}/${id}`);
     if (!shared) {
       try {
-        await getOssClient().put(key, file, { headers: { "Content-Type": file.type, "Cache-Control": "private, no-store" } });
+        const client = getOssClient();
+        const contentType = file.type || "application/octet-stream";
+        const headers: Record<string, string> = {
+          "Content-Type": contentType,
+          "Cache-Control": "private, no-store",
+        };
+        if (contentType !== "application/pdf" && contentType !== "text/plain") {
+          headers["Content-Disposition"] = `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`;
+        }
+        const options = { headers };
+        if (file.size >= 5 * 1024 * 1024) {
+          await client.multipartUpload(key, file, options);
+        } else {
+          await client.put(key, file, options);
+        }
       } catch (reason) {
         throw new ApiError(`附件上传到 OSS 失败：${reason instanceof Error ? reason.message : String(reason)}`, 502, "OSS_ATTACHMENT_SYNC_FAILED");
       }
     }
     const attachment: StoredAttachment = {
-      id, filename, contentType: file.type, size: file.size, objectKey: key, uploadedAt: new Date().toISOString(),
-      uploadedBy: ACTOR, syncStatus: "success",
+      id,
+      filename,
+      contentType: file.type || "application/octet-stream",
+      size: file.size,
+      objectKey: key,
+      uploadedAt: new Date().toISOString(),
+      uploadedBy: ACTOR,
+      syncStatus: "success",
       syncMessage: shared ? "已关联 OSS 中的同名同大小附件，未重复上传" : "附件已同步到 OSS",
-      extractedText: shared?.extractedText ?? (file.type === "text/plain" ? (await file.text()).slice(0, 24000) : ""),
+      extractedText: shared?.extractedText ?? (
+        file.type === "text/plain"
+          ? (await file.slice(0, MAX_ATTACHMENT_TEXT_PREVIEW_CHARS * 4).text()).slice(0, MAX_ATTACHMENT_TEXT_PREVIEW_CHARS)
+          : ""
+      ),
       analysis: shared?.analysis ?? null,
     };
     step.attachments.push(attachment);

@@ -230,6 +230,35 @@ test("unconfigured AI returns an explicit error and creates no analysis", async 
   assert.equal(stored.analysis, null);
 });
 
+test("uploads Office and compressed attachments while rejecting unsupported files", async (t) => {
+  const context = await setup();
+  t.after(() => rm(context.directory, { recursive: true, force: true }));
+  const config = await context.agent.get("/api/config");
+  assert.equal(config.body.fileLimitBytes, 100 * 1024 * 1024);
+  const record = await newCase(context.agent);
+
+  const office = await context.agent
+    .post(`/api/cases/${record.id}/steps/source-register/attachments`)
+    .attach("file", Buffer.from("office content"), {
+      filename: "report.docx",
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+  const archive = await context.agent
+    .post(`/api/cases/${record.id}/steps/source-register/attachments`)
+    .attach("file", Buffer.from("archive content"), { filename: "materials.7z", contentType: "application/x-7z-compressed" });
+  const unsupported = await context.agent
+    .post(`/api/cases/${record.id}/steps/source-register/attachments`)
+    .attach("file", Buffer.from("not allowed"), { filename: "program.exe", contentType: "application/octet-stream" });
+
+  assert.equal(office.status, 201);
+  assert.equal(archive.status, 201);
+  assert.equal(unsupported.status, 400);
+  assert.equal(unsupported.body.error.code, "UNSUPPORTED_FILE_TYPE");
+  assert.match(office.body.attachment.contentType, /openxmlformats/);
+  const download = await context.agent.get(`/api/cases/${record.id}/attachments/${office.body.attachment.id}`);
+  assert.match(download.headers["content-disposition"], /^attachment;/);
+});
+
 test("service worker caches same-origin app assets but leaves OSS requests to the browser", async () => {
   const source = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
   const listeners = new Map();

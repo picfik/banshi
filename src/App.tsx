@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api, getAttachmentUrl, jsonBody } from "./api";
 import { aiProviders, analyzeAttachment, getDefaultAiPreferences, type AiPreferences } from "./ai";
 import type { CaseRecord, HandlingPath, ProcurementMode, Stage, Step, SyncStatus } from "./types";
+import { MAX_ATTACHMENT_SIZE_BYTES, SUPPORTED_ATTACHMENT_EXTENSIONS } from "../shared/attachments.js";
 
 type CaseResponse = { case: CaseRecord; sync: SyncStatus };
 type CasesResponse = { cases: CaseRecord[]; sync: SyncStatus };
@@ -297,6 +298,10 @@ function App() {
     const input = event.currentTarget.elements.namedItem("file") as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
+    if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
+      setError("单个文件最大 100 MB");
+      return;
+    }
     const body = new FormData();
     body.set("file", file);
     await runStepAction(async () => {
@@ -329,6 +334,10 @@ function App() {
   async function analyzeCaseAttachment(attachment: CaseRecord["steps"][number]["attachments"][number]) {
     if (!selectedCase || !activeStep || !config?.aiEnabled) {
       setError("请先在 AI 设置中选择服务并填写 API Key");
+      return;
+    }
+    if (attachment.contentType !== "application/pdf" && attachment.contentType !== "text/plain") {
+      setError("AI 解读目前仅支持 PDF 和纯文本文件");
       return;
     }
     if (!window.confirm("附件文本将发送给当前选择的 AI 服务进行分析。请确认已获授权，且材料符合单位的数据处理要求。")) return;
@@ -746,28 +755,34 @@ function App() {
                           <textarea id="step-note" rows={5} value={noteDraft} maxLength={10000} disabled={!online} onChange={(event) => setNoteDraft(event.target.value)} placeholder="记录实际办理情况、依据及需要跟进的问题…" />
                           <div className="textarea-foot"><span>请准确记录事实，敏感信息按单位要求处理。</span><span>{noteDraft.length}/10000</span></div>
 
-                          <div className="materials-head"><div><h3>办理依据材料</h3><span>仅 PDF、TXT，单个文件最大 10 MiB</span></div><span>{activeStep.attachments.length} 份</span></div>
+                          <div className="materials-head"><div><h3>办理依据材料</h3><span>支持 Office、PDF、文档及压缩文件；单个文件最大 100 MB</span></div><span>{activeStep.attachments.length} 份</span></div>
                           <form className="upload-row" onSubmit={(event) => void uploadFile(event)}>
-                            <input name="file" type="file" accept=".pdf,.txt,application/pdf,text/plain" required disabled={busy || !online} />
+                            <input name="file" type="file" accept={SUPPORTED_ATTACHMENT_EXTENSIONS.join(",")} required disabled={busy || !online} />
                             <button className="secondary" disabled={busy || !online}>上传材料</button>
                           </form>
                           {!online && <p className="hint-text">离线时不支持上传或编辑；恢复网络后请重新操作。</p>}
                           {activeStep.attachments.length > 0 && (
                             <div className="attachment-list">
-                              {activeStep.attachments.map((attachment) => (
-                                <article className="attachment-card" key={attachment.id}>
-                                  <span className="file-icon">{attachment.contentType === "application/pdf" ? "PDF" : "TXT"}</span>
-                                  <div className="attachment-info">
-                                    <button className="attachment-link" type="button" onClick={() => void openAttachment(attachment.objectKey)}>{attachment.filename}</button>
-                                    <small>{(attachment.size / 1024).toFixed(0)} KB · {attachment.syncMessage}</small>
-                                  </div>
-                                  <div className="attachment-actions">
-                                    <button className="text-button" disabled={busy || !online || !config?.aiEnabled} title={config?.aiEnabled ? "使用配置的 AI 解读附件" : "请先配置 AI 服务"} onClick={() => void analyzeCaseAttachment(attachment)}>{attachment.analysis ? "重新解读" : "AI 解读"}</button>
-                                    <button className="icon-button danger-icon" aria-label="删除材料" disabled={busy || !online} onClick={() => void deleteAttachment(attachment.id)}>×</button>
-                                  </div>
-                                  {attachment.analysis && <AnalysisCard analysis={attachment.analysis} />}
-                                </article>
-                              ))}
+                              {activeStep.attachments.map((attachment) => {
+                                const canAnalyze = attachment.contentType === "application/pdf" || attachment.contentType === "text/plain";
+                                const sizeLabel = attachment.size >= 1024 * 1024
+                                  ? `${(attachment.size / (1024 * 1024)).toFixed(1)} MB`
+                                  : `${(attachment.size / 1024).toFixed(0)} KB`;
+                                return (
+                                  <article className="attachment-card" key={attachment.id}>
+                                    <span className="file-icon">{attachment.contentType === "application/pdf" ? "PDF" : "文件"}</span>
+                                    <div className="attachment-info">
+                                      <button className="attachment-link" type="button" onClick={() => void openAttachment(attachment.objectKey)}>{attachment.filename}</button>
+                                      <small>{sizeLabel} · {attachment.syncMessage}</small>
+                                    </div>
+                                    <div className="attachment-actions">
+                                      <button className="text-button" disabled={busy || !online || !config?.aiEnabled || !canAnalyze} title={!canAnalyze ? "AI 解读目前仅支持 PDF 和纯文本文件" : config?.aiEnabled ? "使用配置的 AI 解读附件" : "请先配置 AI 服务"} onClick={() => void analyzeCaseAttachment(attachment)}>{canAnalyze ? attachment.analysis ? "重新解读" : "AI 解读" : "暂不可解读"}</button>
+                                      <button className="icon-button danger-icon" aria-label="删除材料" disabled={busy || !online} onClick={() => void deleteAttachment(attachment.id)}>×</button>
+                                    </div>
+                                    {attachment.analysis && <AnalysisCard analysis={attachment.analysis} />}
+                                  </article>
+                                );
+                              })}
                             </div>
                           )}
                           {activeStep.requiresReview && (

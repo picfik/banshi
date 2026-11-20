@@ -2,9 +2,15 @@ import "dotenv/config";
 import express from "express";
 import multer from "multer";
 import path from "node:path";
+import { createReadStream } from "node:fs";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, unlink } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import {
+  isSupportedAttachmentName,
+  MAX_ATTACHMENT_SIZE_BYTES,
+  MAX_ATTACHMENT_TEXT_PREVIEW_CHARS,
+} from "../shared/attachments.js";
 import {
   addAudit,
   createCaseRecord,
@@ -20,8 +26,6 @@ import { createAiService } from "./ai.js";
 import { createOssClient, objectKey } from "./oss.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
-const ALLOWED_TYPES = new Set(["application/pdf", "text/plain"]);
 
 function constantTimeEqual(left, right) {
   const leftHash = createHash("sha256").update(String(left)).digest();
@@ -57,6 +61,24 @@ function cookieValue(header, name) {
 
 function safeFilename(filename) {
   return path.basename(filename).replace(/[^\p{L}\p{N}._ -]/gu, "_").slice(0, 120) || "attachment";
+}
+
+async function removeTemporaryUpload(filePath) {
+  try {
+    await unlink(filePath);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+
+async function readTextPreview(filePath) {
+  const stream = createReadStream(filePath, { encoding: "utf8", highWaterMark: MAX_ATTACHMENT_TEXT_PREVIEW_CHARS * 4 });
+  let text = "";
+  for await (const chunk of stream) {
+    text += chunk;
+    if (text.length >= MAX_ATTACHMENT_TEXT_PREVIEW_CHARS) break;
+  }
+  return text.slice(0, MAX_ATTACHMENT_TEXT_PREVIEW_CHARS);
 }
 
 function publicSync(sync, data) {
@@ -256,7 +278,7 @@ export async function createApp({
       handlingPaths: getHandlingPaths(),
       procurementModes: dataStore.data.settings.procurementModes,
       aiEnabled: aiService.enabled,
-      fileLimitBytes: MAX_FILE_SIZE,
+      fileLimitBytes: MAX_ATTACHMENT_SIZE_BYTES,
     });
   });
 
@@ -567,11 +589,14 @@ export async function createApp({
   });
 
   const upload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_FILE_SIZE, files: 1 },
+    storage: multer.diskStorage({
+      destination: resolvedUploadDir,
+      filename: (_req, _file, callback) => callback(null, randomUUID()),
+    }),
+    limits: { fileSize: MAX_ATTACHMENT_SIZE_BYTES, files: 1 },
     fileFilter: (req, file, callback) => {
-      if (!ALLOWED_TYPES.has(file.mimetype)) {
-        const error = new Error("仅支持 PDF 和纯文本文件");
+      if (!isSupportedAttachmentName(file.originalname)) {
+        const error = new Error("不支持此文件格式，请选择文档或压缩文件");
         error.code = "UNSUPPORTED_FILE_TYPE";
         callback(error);
       } else {
@@ -580,7 +605,7 @@ export async function createApp({
     },
   });
 
-  app.post("/api/cases/:caseId/steps/:stepId/attachments", upload.single("file"), async (req, res) => {
+  app.post("/api/cases/:caseId/steps/:stepId/attachments", (req, res, next) => {
     const record = getCase(req.params.caseId);
     if (!record) return sendError(res, 404, "CASE_NOT_FOUND", "未找到该事项");
     const step = getStep(record, req.params.stepId);
@@ -588,11 +613,27 @@ export async function createApp({
     if (step.status === "completed" || getCurrentStep(record)?.id !== step.id) {
       return sendError(res, 409, "STEP_NOT_CURRENT", "只有当前待办步骤可以上传材料");
     }
+    next();
+  }, upload.single("file"), async (req, res) => {
+    const record = getCase(req.params.caseId);
+    if (!record) {
+      if (req.file) await removeTemporaryUpload(req.file.path);
+      return sendError(res, 404, "CASE_NOT_FOUND", "未找到该事项");
+    }
+    const step = getStep(record, req.params.stepId);
+    if (!step) {
+      if (req.file) await removeTemporaryUpload(req.file.path);
+      return sendError(res, 404, "STEP_NOT_FOUND", "未找到该办理步骤");
+    }
+    if (step.status === "completed" || getCurrentStep(record)?.id !== step.id) {
+      if (req.file) await removeTemporaryUpload(req.file.path);
+      return sendError(res, 409, "STEP_NOT_CURRENT", "只有当前待办步骤可以上传材料");
+    }
     if (!req.file) return sendError(res, 400, "FILE_REQUIRED", "请选择要上传的材料");
-    const id = randomUUID();
+    const id = req.file.filename;
     const filename = safeFilename(req.file.originalname);
-    const diskPath = path.join(resolvedUploadDir, id);
-    await writeFile(diskPath, req.file.buffer, { flag: "wx", mode: 0o600 });
+    const diskPath = req.file.path;
+    const contentType = req.file.mimetype || "application/octet-stream";
     const key = objectKey(env.OSS_PREFIX ?? "casework", `attachments/${record.id}/${id}`);
     let syncStatus = "not_configured";
     let syncMessage = "OSS 未配置；附件仅保存在服务端本地";
@@ -600,8 +641,15 @@ export async function createApp({
     try {
       ossClient = await ossClientPromise;
       if (ossClient) {
-        await ossClient.put(key, req.file.buffer, {
-          headers: { "Content-Type": req.file.mimetype, "Cache-Control": "private, no-store" },
+        await ossClient.putStream(key, createReadStream(diskPath), {
+          contentLength: req.file.size,
+          headers: {
+            "Content-Type": contentType,
+            "Cache-Control": "private, no-store",
+            ...(contentType === "application/pdf" || contentType === "text/plain"
+              ? {}
+              : { "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(filename)}` }),
+          },
         });
         syncStatus = "success";
         syncMessage = "附件已同步到 OSS";
@@ -613,7 +661,7 @@ export async function createApp({
     const attachment = {
       id,
       filename,
-      contentType: req.file.mimetype,
+      contentType,
       size: req.file.size,
       objectKey: key,
       localPath: id,
@@ -621,7 +669,7 @@ export async function createApp({
       uploadedBy: req.username,
       syncStatus,
       syncMessage,
-      extractedText: req.file.mimetype === "text/plain" ? req.file.buffer.toString("utf8").slice(0, 24000) : "",
+      extractedText: contentType === "text/plain" ? await readTextPreview(diskPath) : "",
       analysis: null,
     };
     await dataStore.transaction(async (data) => {
@@ -638,16 +686,22 @@ export async function createApp({
     const record = getCase(req.params.caseId);
     const attachment = record?.steps.flatMap((step) => step.attachments).find((item) => item.id === req.params.attachmentId);
     if (!attachment) return sendError(res, 404, "ATTACHMENT_NOT_FOUND", "未找到该材料");
-    try {
-      const body = await readFile(path.join(resolvedUploadDir, attachment.localPath));
-      res.setHeader("Content-Type", attachment.contentType);
-      res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`);
-      res.setHeader("Cache-Control", "private, no-store");
-      res.setHeader("X-Content-Type-Options", "nosniff");
-      res.send(body);
-    } catch {
-      sendError(res, 404, "ATTACHMENT_FILE_MISSING", "服务端本地附件副本不存在；请从备份恢复");
-    }
+    res.setHeader("Content-Type", attachment.contentType);
+    res.setHeader(
+      "Content-Disposition",
+      `${attachment.contentType === "application/pdf" || attachment.contentType === "text/plain" ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`,
+    );
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    const stream = createReadStream(path.join(resolvedUploadDir, attachment.localPath));
+    stream.on("error", (error) => {
+      if (res.headersSent) return res.destroy(error);
+      if (error.code === "ENOENT") {
+        return sendError(res, 404, "ATTACHMENT_FILE_MISSING", "服务端本地附件副本不存在；请从备份恢复");
+      }
+      return sendError(res, 500, "ATTACHMENT_READ_FAILED", "服务端读取附件失败");
+    });
+    stream.pipe(res);
   });
 
   app.delete("/api/cases/:caseId/steps/:stepId/attachments/:attachmentId", async (req, res) => {
@@ -711,9 +765,15 @@ export async function createApp({
           for (const attachment of step.attachments) {
             if (attachment.syncStatus === "success") continue;
             try {
-              const buffer = await readFile(path.join(resolvedUploadDir, attachment.localPath));
-              await client.put(attachment.objectKey, buffer, {
-                headers: { "Content-Type": attachment.contentType, "Cache-Control": "private, no-store" },
+              await client.putStream(attachment.objectKey, createReadStream(path.join(resolvedUploadDir, attachment.localPath)), {
+                contentLength: attachment.size,
+                headers: {
+                  "Content-Type": attachment.contentType,
+                  "Cache-Control": "private, no-store",
+                  ...(attachment.contentType === "application/pdf" || attachment.contentType === "text/plain"
+                    ? {}
+                    : { "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(attachment.filename)}` }),
+                },
               });
               attachment.syncStatus = "success";
               attachment.syncMessage = "附件已同步到 OSS";
@@ -745,7 +805,7 @@ export async function createApp({
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
     if (error instanceof multer.MulterError) {
-      const message = error.code === "LIMIT_FILE_SIZE" ? "单个文件最大 10 MiB" : "文件上传请求无效";
+      const message = error.code === "LIMIT_FILE_SIZE" ? "单个文件最大 100 MB" : "文件上传请求无效";
       return sendError(res, 400, error.code, message);
     }
     if (error.code === "UNSUPPORTED_FILE_TYPE") return sendError(res, 400, error.code, error.message);

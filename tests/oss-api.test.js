@@ -56,9 +56,9 @@ async function setup() {
           body: JSON.stringify({ title, source: "测试来源" }),
         }).then((result) => result.case);
       },
-      async upload(record, filename = "shared.txt") {
+      async upload(record, filename = "shared.txt", contentType = "text/plain") {
         const form = new FormData();
-        form.set("file", new File(["same file"], filename, { type: "text/plain" }));
+        form.set("file", new File(["same file"], filename, { type: contentType }));
         return api(`/api/cases/${record.id}/steps/source-register/attachments`, {
           method: "POST",
           body: form,
@@ -160,6 +160,28 @@ test("renames cases and sorts important cases first and held cases last", async 
   const result = await context.api("/api/cases");
   assert.deepEqual(result.cases.map((record) => record.id), [important.id, ordinary.id, held.id]);
   assert.equal(result.cases[2].isOnHold, true);
+});
+
+test("accepts Office and archive attachments and rejects unsupported extensions", async (t) => {
+  const context = await setup();
+  t.after(() => context.close());
+  const config = await context.api("/api/config");
+  assert.equal(config.fileLimitBytes, 100 * 1024 * 1024);
+  const record = await context.createCase("格式测试事项");
+
+  const office = await context.upload(
+    record,
+    "采购文件.docx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  );
+  const archive = await context.upload(record, "材料.7z", "application/x-7z-compressed");
+
+  assert.equal(office.attachment.filename, "采购文件.docx");
+  assert.equal(archive.attachment.filename, "材料.7z");
+  await assert.rejects(
+    context.upload(record, "program.exe", "application/octet-stream"),
+    (error) => error.status === 400 && error.code === "UNSUPPORTED_FILE_TYPE",
+  );
 });
 
 test("saves AI provider credentials and model in shared OSS settings", async (t) => {
