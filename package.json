@@ -4,11 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm:dev:server\" \"npm:dev:web\"",
-    "dev:server": "node --watch server/index.js",
-    "dev:web": "vite",
+    "dev": "vite",
     "build": "tsc -b && vite build",
-    "start": "node server/index.js",
+    "preview": "vite preview",
     "test": "node --test"
   },
   "dependencies": {
@@ -22,6 +20,7 @@
     "vite": "^6.0.7"
   },
   "devDependencies": {
+    "@types/ali-oss": "^6.23.4",
     "@types/express": "^5.0.0",
     "@types/multer": "^1.4.12",
     "@types/node": "^22.10.5",

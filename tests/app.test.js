@@ -196,12 +196,13 @@ test("unconfigured AI returns an explicit error and creates no analysis", async 
   assert.equal(stored.analysis, null);
 });
 
-test("service worker caches static assets but bypasses API and attachments", async () => {
+test("service worker caches same-origin app assets but leaves OSS requests to the browser", async () => {
   const source = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
   const listeners = new Map();
   const context = {
     self: {
-      location: { origin: "https://app.example.test" },
+      location: { origin: "https://app.example.test", href: "https://app.example.test/banshi/sw.js" },
+      registration: { scope: "https://app.example.test/banshi/" },
       clients: { claim() {} },
       skipWaiting() {},
       addEventListener(name, callback) { listeners.set(name, callback); },
@@ -222,9 +223,7 @@ test("service worker caches static assets but bypasses API and attachments", asy
   listeners.get("fetch")(staticRequest);
   assert.ok(staticRequest.response, "static GET should use the static cache strategy");
 
-  for (const url of ["https://app.example.test/api/cases", "https://app.example.test/api/cases/1/attachments/2"]) {
-    const apiRequest = { request: { method: "GET", url }, respondWith(value) { this.response = value; } };
-    listeners.get("fetch")(apiRequest);
-    assert.equal(apiRequest.response, undefined, "API and attachment responses must not be cached");
-  }
+  const ossRequest = { request: { method: "GET", url: "https://bucket.oss-cn-hangzhou.aliyuncs.com/casework/data/cases.json" }, respondWith(value) { this.response = value; } };
+  listeners.get("fetch")(ossRequest);
+  assert.equal(ossRequest.response, undefined, "OSS data should not be cached by the app service worker");
 });

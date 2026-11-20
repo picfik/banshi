@@ -2,13 +2,14 @@
   "name": "办事流程台账",
   "short_name": "流程台账",
   "description": "办事事项来源、办理流程和最终闭环记录工具",
-  "start_url": "/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#f4f6f3",
   "theme_color": "#173b35",
   "icons": [
     {
-      "src": "/icon.svg",
+      "src": "./icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"

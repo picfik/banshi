@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { ApiError, api, jsonBody } from "./api";
+import { api, getAttachmentUrl, jsonBody } from "./api";
 import type { CaseRecord, HandlingPath, ProcurementMode, Stage, Step, SyncStatus } from "./types";
 
 type CaseResponse = { case: CaseRecord; sync: SyncStatus };
@@ -45,10 +45,6 @@ function getCaseProgress(record: CaseRecord) {
 }
 
 function App() {
-  const [authenticated, setAuthenticated] = useState(false);
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [loginError, setLoginError] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -84,11 +80,6 @@ function App() {
   );
 
   const handleError = useCallback((reason: unknown) => {
-    if (reason instanceof ApiError && reason.status === 401) {
-      setAuthenticated(false);
-      setError("");
-      return;
-    }
     setError(reason instanceof Error ? reason.message : "操作失败，请重试");
   }, []);
 
@@ -117,12 +108,10 @@ function App() {
     try {
       const cfg = await api<ConfigResponse>("/api/config");
       setConfig(cfg);
-      setAuthenticated(true);
       await refreshCases(null);
       setError("");
     } catch (reason) {
-      if (reason instanceof ApiError && reason.status === 401) setAuthenticated(false);
-      else handleError(reason);
+      handleError(reason);
     } finally {
       setLoading(false);
     }
@@ -134,16 +123,19 @@ function App() {
 
   useEffect(() => {
     const onlineChange = () => setOnline(navigator.onLine);
+    const syncChange = (event: Event) => setSync((event as CustomEvent<SyncStatus>).detail);
     const installAvailable = (event: Event) => {
       event.preventDefault();
       setInstallPrompt(event as BeforeInstallPromptEvent);
     };
     window.addEventListener("online", onlineChange);
     window.addEventListener("offline", onlineChange);
+    window.addEventListener("oss-sync-status", syncChange);
     window.addEventListener("beforeinstallprompt", installAvailable);
     return () => {
       window.removeEventListener("online", onlineChange);
       window.removeEventListener("offline", onlineChange);
+      window.removeEventListener("oss-sync-status", syncChange);
       window.removeEventListener("beforeinstallprompt", installAvailable);
     };
   }, []);
@@ -159,21 +151,6 @@ function App() {
   useEffect(() => {
     setProcurementNoteDraft(currentProcurementStep?.note ?? "");
   }, [currentProcurementStep?.id, currentProcurementStep?.note]);
-
-  async function login(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setBusy(true);
-    setLoginError("");
-    try {
-      await api("/api/auth/login", { method: "POST", body: jsonBody({ username, password }) });
-      setPassword("");
-      await loadWorkspace();
-    } catch (reason) {
-      setLoginError(reason instanceof Error ? reason.message : "登录失败");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function createCase(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -325,14 +302,6 @@ function App() {
     });
   }
 
-  async function analyze(attachmentId: string) {
-    if (!selectedCase || !activeStep) return;
-    await runStepAction(() => api(
-      `/api/cases/${selectedCase.id}/steps/${activeStep.id}/attachments/${attachmentId}/analyze`,
-      { method: "POST", body: "{}" },
-    ));
-  }
-
   async function deleteAttachment(attachmentId: string) {
     if (!selectedCase || !activeStep) return;
     if (!window.confirm("确定删除此材料？此操作会写入审计记录。")) return;
@@ -411,35 +380,19 @@ function App() {
     setSearchOpen(false);
   }
 
-  async function logout() {
+  async function openAttachment(objectKey: string) {
+    const previewWindow = window.open("about:blank", "_blank");
+    if (previewWindow) previewWindow.opener = null;
     try {
-      await api("/api/auth/logout", { method: "POST" });
-    } finally {
-      setAuthenticated(false);
-      setSelectedCase(null);
-      setCases([]);
+      const url = await getAttachmentUrl(objectKey);
+      if (previewWindow) previewWindow.location.href = url;
+    } catch (reason) {
+      previewWindow?.close();
+      handleError(reason);
     }
   }
 
   if (loading) return <main className="loading-screen"><span className="spinner" />正在加载工作台…</main>;
-
-  if (!authenticated) {
-    return (
-      <main className="login-page">
-        <form className="login-card" onSubmit={login}>
-          <div className="brand-mark">事</div>
-          <p className="eyebrow">内部辅助工具</p>
-          <h1>办事流程台账</h1>
-          <p className="muted">请使用部署时配置的工作账号登录。</p>
-          <label>用户名<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required /></label>
-          <label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
-          {loginError && <p className="error-text">{loginError}</p>}
-          <button className="primary full" disabled={busy}>{busy ? "正在登录…" : "登录工作台"}</button>
-          <p className="privacy-note">业务数据仅通过受保护的服务端接口读取；请勿在公共设备保存账号。</p>
-        </form>
-      </main>
-    );
-  }
 
   if (settingsOpen && config) {
     return (
@@ -447,7 +400,7 @@ function App() {
         <header className="topbar">
           <div className="brand"><div className="brand-mark">事</div><div><strong>办事流程台账</strong><span>流程设置</span></div></div>
           <div className="top-actions">
-            <span className="user-chip">{config.username}</span>
+            <span className="user-chip">OSS 直连</span>
             <button className="secondary" onClick={() => setSettingsOpen(false)}>返回事项台账</button>
           </div>
         </header>
@@ -501,8 +454,7 @@ function App() {
           {(sync.status === "failed" || cases.some((record) => record.steps.some((step) => step.attachments.some((attachment) => attachment.syncStatus === "failed")))) && <button className="quiet-button" onClick={retrySync} disabled={busy}>重试同步</button>}
           {installPrompt && <button className="quiet-button" onClick={() => void installPrompt.prompt()}>安装应用</button>}
           <button className="quiet-button" onClick={() => setSettingsOpen(true)}>采购路径设置</button>
-          <span className="user-chip">{config?.username}</span>
-          <button className="quiet-button" onClick={logout}>退出</button>
+          <span className="user-chip">OSS 直连</span>
         </div>
       </header>
 
@@ -663,10 +615,9 @@ function App() {
                                 <article className="attachment-card" key={attachment.id}>
                                   <span className="file-icon">{attachment.contentType === "application/pdf" ? "PDF" : "TXT"}</span>
                                   <div className="attachment-info">
-                                    <a href={`/api/cases/${selectedCase.id}/attachments/${attachment.id}`} target="_blank" rel="noreferrer">{attachment.filename}</a>
+                                    <button className="attachment-link" type="button" onClick={() => void openAttachment(attachment.objectKey)}>{attachment.filename}</button>
                                     <small>{(attachment.size / 1024).toFixed(0)} KB · {attachment.syncMessage}</small>
                                   </div>
-                                  <button className="text-button" disabled={busy || !online} onClick={() => void analyze(attachment.id)}>{attachment.analysis ? "重新分析" : "AI 整理"}</button>
                                   <button className="icon-button danger-icon" aria-label="删除材料" disabled={busy || !online} onClick={() => void deleteAttachment(attachment.id)}>×</button>
                                   {attachment.analysis && <AnalysisCard analysis={attachment.analysis} />}
                                 </article>
@@ -699,7 +650,7 @@ function App() {
                   <div className="ai-notice"><span>AI 辅助说明</span>{config?.aiEnabled ? "仅整理可读取的纯文本内容；结果需工作人员核实，不替代审批。" : "当前未启用 AI；材料需由工作人员自行核对，系统不会生成虚构分析。"}</div>
                 </section>
               </div>
-              <div className="storage-note"><strong>数据与隐私</strong><span>业务数据保存在服务端 JSON 文件。OSS 未配置时数据仅保存在服务端本地；本工作区不提供数据库级多用户并发能力。</span></div>
+              <div className="storage-note"><strong>数据与存储</strong><span>事项数据和附件直接读写 OSS；每次打开时从 OSS 加载最新事项。此静态页面不提供账号认证及多人并发写入保障。</span></div>
             </div>
           )}
         </section>
@@ -720,7 +671,7 @@ function App() {
       {audit.length > 0 && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAudit([]); }}>
         <section className="modal-card audit-modal"><button className="modal-close" aria-label="关闭" onClick={() => setAudit([])}>×</button><p className="eyebrow">追踪与留痕</p><h2>最近操作记录</h2>
           <div className="audit-list">{audit.map((entry) => <article key={entry.id}><span className="audit-dot" /><div><strong>{entry.action.replaceAll("_", " ")}</strong><small>{entry.actor} · {formatTime(entry.at)}</small></div></article>)}</div>
-          <p className="privacy-note">审计记录保存在服务端业务 JSON 中；此 MVP 不提供独立防篡改审计存储。</p>
+          <p className="privacy-note">审计记录保存在 OSS 业务 JSON 中；此 MVP 不提供独立防篡改审计存储。</p>
         </section>
       </div>}
     </div>

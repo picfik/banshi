@@ -1,5 +1,6 @@
-const CACHE_NAME = "casework-static-v1";
-const APP_SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
+const CACHE_NAME = "casework-static-v2";
+const APP_ROOT = new URL(".", self.location.href).pathname;
+const APP_SHELL = [APP_ROOT, `${APP_ROOT}manifest.webmanifest`, `${APP_ROOT}icon.svg`];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
@@ -20,9 +21,7 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (
     request.method !== "GET" ||
-    url.origin !== self.location.origin ||
-    url.pathname === "/api" ||
-    url.pathname.startsWith("/api/")
+    url.origin !== self.location.origin
   ) {
     return;
   }
