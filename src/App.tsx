@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api, getAttachmentUrl, jsonBody } from "./api";
+import { aiProviders, analyzeAttachment, getDefaultAiPreferences, type AiPreferences } from "./ai";
 import type { CaseRecord, HandlingPath, ProcurementMode, Stage, Step, SyncStatus } from "./types";
 
 type CaseResponse = { case: CaseRecord; sync: SyncStatus };
@@ -17,6 +18,7 @@ type ConfigResponse = {
   stages: Stage[];
   handlingPaths: HandlingPath[];
   procurementModes: ProcurementMode[];
+  aiPreferences: AiPreferences;
   aiEnabled: boolean;
   fileLimitBytes: number;
 };
@@ -57,12 +59,13 @@ function App() {
   const [noteDraft, setNoteDraft] = useState("");
   const [pathDraft, setPathDraft] = useState("");
   const [procurementNoteDraft, setProcurementNoteDraft] = useState("");
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPage, setSettingsPage] = useState<"procurement" | "ai" | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searching, setSearching] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [online, setOnline] = useState(navigator.onLine);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
@@ -87,7 +90,7 @@ function App() {
     const result = await api<CasesResponse>("/api/cases");
     setCases(result.cases);
     setSync(result.sync);
-    const targetId = caseId ?? selectedId;
+    const targetId = caseId === undefined ? selectedId : caseId;
     if (targetId) {
       const detail = await api<CaseResponse>(`/api/cases/${targetId}`);
       setSelectedCase(detail.case);
@@ -100,6 +103,7 @@ function App() {
       });
     } else {
       setSelectedCase(null);
+      setSelectedId(null);
     }
   }, [selectedId]);
 
@@ -270,7 +274,7 @@ function App() {
       });
       setConfig((current) => current ? { ...current, procurementModes: result.modes } : current);
       setSync(result.sync);
-      setSettingsOpen(false);
+      setSettingsPage(null);
     } catch (reason) {
       handleError(reason);
     } finally {
@@ -304,11 +308,121 @@ function App() {
 
   async function deleteAttachment(attachmentId: string) {
     if (!selectedCase || !activeStep) return;
-    if (!window.confirm("确定删除此材料？此操作会写入审计记录。")) return;
-    await runStepAction(() => api(
-      `/api/cases/${selectedCase.id}/steps/${activeStep.id}/attachments/${attachmentId}`,
-      { method: "DELETE", body: jsonBody({ confirm: true }) },
-    ));
+    if (!window.confirm("确定删除此材料？如仍关联其他事项，删除将被拒绝。此操作会写入审计记录。")) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api<{ cleanupError: string | null }>(
+        `/api/cases/${selectedCase.id}/steps/${activeStep.id}/attachments/${attachmentId}`,
+        { method: "DELETE", body: jsonBody({ confirm: true }) },
+      );
+      await refreshCases(selectedId);
+      if (result.cleanupError) {
+        setError(`材料记录已删除，但 OSS 附件未能清理：${result.cleanupError}`);
+      }
+    } catch (reason) {
+      handleError(reason);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function analyzeCaseAttachment(attachment: CaseRecord["steps"][number]["attachments"][number]) {
+    if (!selectedCase || !activeStep || !config?.aiEnabled) {
+      setError("请先在 AI 设置中选择服务并填写 API Key");
+      return;
+    }
+    if (!window.confirm("附件文本将发送给当前选择的 AI 服务进行分析。请确认已获授权，且材料符合单位的数据处理要求。")) return;
+    await runStepAction(async () => {
+      const result = await analyzeAttachment(attachment, activeStep, config.aiPreferences);
+      await api(`/api/cases/${selectedCase.id}/steps/${activeStep.id}/attachments/${attachment.id}/analyze`, {
+        method: "POST",
+        body: jsonBody(result),
+      });
+    });
+  }
+
+  async function renameCase(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedCase) return;
+    const form = new FormData(event.currentTarget);
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api<CaseResponse>(`/api/cases/${selectedCase.id}`, {
+        method: "PATCH",
+        body: jsonBody({ title: form.get("title") }),
+      });
+      setRenameOpen(false);
+      await refreshCases(result.case.id);
+    } catch (reason) {
+      handleError(reason);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateCaseFlags(patch: Partial<Pick<CaseRecord, "isImportant" | "isOnHold">>) {
+    if (!selectedCase) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api<CaseResponse>(`/api/cases/${selectedCase.id}/flags`, {
+        method: "PATCH",
+        body: jsonBody({
+          isImportant: patch.isImportant ?? Boolean(selectedCase.isImportant),
+          isOnHold: patch.isOnHold ?? Boolean(selectedCase.isOnHold),
+        }),
+      });
+      await refreshCases(result.case.id);
+    } catch (reason) {
+      handleError(reason);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteCase() {
+    if (!selectedCase || !window.confirm(`确定删除事项“${selectedCase.title}”？仍被其他事项引用的附件会保留在 OSS。`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api<{ preservedAttachmentCount: number; cleanupErrors: string[] }>("/api/cases/" + selectedCase.id, {
+        method: "DELETE",
+      });
+      await refreshCases(null);
+      if (result.cleanupErrors.length) {
+        setError(`事项已删除，但有 ${result.cleanupErrors.length} 个未被引用的附件未能从 OSS 清理；可在 OSS 控制台检查。`);
+      } else if (result.preservedAttachmentCount) {
+        setError(`事项已删除；${result.preservedAttachmentCount} 个仍被其他事项引用的附件已保留。`);
+      }
+    } catch (reason) {
+      handleError(reason);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveAiSettings(preferences: AiPreferences) {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api<Pick<ConfigResponse, "aiPreferences" | "aiEnabled"> & { sync: SyncStatus }>("/api/settings/ai", {
+        method: "PUT",
+        body: jsonBody(preferences),
+      });
+      setConfig((current) => current ? {
+        ...current,
+        aiPreferences: result.aiPreferences,
+        aiEnabled: result.aiEnabled,
+      } : current);
+      setSync(result.sync);
+      setSettingsPage(null);
+    } catch (reason) {
+      handleError(reason);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function reopenStep(step: Step) {
@@ -394,23 +508,32 @@ function App() {
 
   if (loading) return <main className="loading-screen"><span className="spinner" />正在加载工作台…</main>;
 
-  if (settingsOpen && config) {
+  if (settingsPage && config) {
     return (
       <div className="app-shell">
         <header className="topbar">
           <div className="brand"><div className="brand-mark">事</div><div><strong>办事流程台账</strong><span>流程设置</span></div></div>
           <div className="top-actions">
             <span className="user-chip">OSS 直连</span>
-            <button className="secondary" onClick={() => setSettingsOpen(false)}>返回事项台账</button>
+            <button className="secondary" onClick={() => setSettingsPage(null)}>返回事项台账</button>
           </div>
         </header>
-        <ProcurementSettings
-          modes={config.procurementModes}
-          busy={busy}
-          online={online}
-          onSave={(modes) => void saveProcurementModes(modes)}
-          onCancel={() => setSettingsOpen(false)}
-        />
+        {settingsPage === "procurement" ? (
+          <ProcurementSettings
+            modes={config.procurementModes}
+            busy={busy}
+            online={online}
+            onSave={(modes) => void saveProcurementModes(modes)}
+            onCancel={() => setSettingsPage(null)}
+          />
+        ) : (
+          <AiSettings
+            initial={config.aiPreferences}
+            busy={busy}
+            onSave={saveAiSettings}
+            onCancel={() => setSettingsPage(null)}
+          />
+        )}
         {error && <div className="settings-error" role="alert">{error}</div>}
       </div>
     );
@@ -453,7 +576,8 @@ function App() {
           <span className={`sync-pill ${sync.status}`}><i />{statusLabel(sync.status)}</span>
           {(sync.status === "failed" || cases.some((record) => record.steps.some((step) => step.attachments.some((attachment) => attachment.syncStatus === "failed")))) && <button className="quiet-button" onClick={retrySync} disabled={busy}>重试同步</button>}
           {installPrompt && <button className="quiet-button" onClick={() => void installPrompt.prompt()}>安装应用</button>}
-          <button className="quiet-button" onClick={() => setSettingsOpen(true)}>采购路径设置</button>
+          <button className="quiet-button" onClick={() => setSettingsPage("procurement")}>采购路径设置</button>
+          <button className="quiet-button" onClick={() => setSettingsPage("ai")}>AI 设置</button>
           <span className="user-chip">OSS 直连</span>
         </div>
       </header>
@@ -475,6 +599,12 @@ function App() {
                   <button key={record.id} className={`case-card ${record.id === selectedId ? "selected" : ""}`} onClick={() => void selectCase(record)}>
                     <span className="case-card-title">{record.title}</span>
                     <span className="case-card-source">{record.source}</span>
+                    {(record.isImportant || record.isOnHold) && (
+                      <span className="case-card-badges">
+                        {record.isImportant && <span className="case-badge important">★ 重要</span>}
+                        {record.isOnHold && <span className="case-badge on-hold">搁置</span>}
+                      </span>
+                    )}
                     <span className="case-progress"><span style={{ width: `${progress.percent}%` }} /></span>
                     <span className="case-card-foot"><span>{progress.done === progress.total ? "已闭环" : `已完成 ${progress.done}/${progress.total} 步`}</span><span>{progress.percent}%</span></span>
                   </button>
@@ -504,11 +634,25 @@ function App() {
                   <h1>{selectedCase.title}</h1>
                   <p>{selectedCase.description || "暂无事项说明"}</p>
                 </div>
-                <div className="completion-badge">
-                  <strong>{getCaseProgress(selectedCase).percent}%</strong>
-                  <span>整体进度</span>
+                <div className="case-actions">
+                  <div className="completion-badge">
+                    <strong>{getCaseProgress(selectedCase).percent}%</strong>
+                    <span>整体进度</span>
+                  </div>
+                  <div className="case-action-buttons">
+                    <button className="secondary" disabled={busy || !online} onClick={() => setRenameOpen(true)}>修改名称</button>
+                    <button className="secondary" disabled={busy || !online} onClick={() => void updateCaseFlags({ isImportant: !selectedCase.isImportant })}>{selectedCase.isImportant ? "★ 已置顶" : "设为重要并置顶"}</button>
+                    <button className="secondary" disabled={busy || !online} onClick={() => void updateCaseFlags({ isOnHold: !selectedCase.isOnHold })}>{selectedCase.isOnHold ? "恢复办理" : "设为搁置"}</button>
+                    <button className="danger-button" disabled={busy || !online} onClick={() => void deleteCase()}>删除事项</button>
+                  </div>
                 </div>
               </div>
+              {(selectedCase.isImportant || selectedCase.isOnHold) && (
+                <div className="case-status-badges">
+                  {selectedCase.isImportant && <span className="case-badge important">★ 重要事项（列表置顶）</span>}
+                  {selectedCase.isOnHold && <span className="case-badge on-hold">当前搁置</span>}
+                </div>
+              )}
               <div className="source-card"><span className="source-icon">↳</span><div><span>事项来源</span><strong>{selectedCase.source}</strong></div>{selectedHandlingPath && <span className="path-chip">路径：{selectedHandlingPath.title}</span>}<small>建档于 {formatTime(selectedCase.createdAt)}</small></div>
 
               <div className="stage-overview">
@@ -618,7 +762,10 @@ function App() {
                                     <button className="attachment-link" type="button" onClick={() => void openAttachment(attachment.objectKey)}>{attachment.filename}</button>
                                     <small>{(attachment.size / 1024).toFixed(0)} KB · {attachment.syncMessage}</small>
                                   </div>
-                                  <button className="icon-button danger-icon" aria-label="删除材料" disabled={busy || !online} onClick={() => void deleteAttachment(attachment.id)}>×</button>
+                                  <div className="attachment-actions">
+                                    <button className="text-button" disabled={busy || !online || !config?.aiEnabled} title={config?.aiEnabled ? "使用配置的 AI 解读附件" : "请先配置 AI 服务"} onClick={() => void analyzeCaseAttachment(attachment)}>{attachment.analysis ? "重新解读" : "AI 解读"}</button>
+                                    <button className="icon-button danger-icon" aria-label="删除材料" disabled={busy || !online} onClick={() => void deleteAttachment(attachment.id)}>×</button>
+                                  </div>
                                   {attachment.analysis && <AnalysisCard analysis={attachment.analysis} />}
                                 </article>
                               ))}
@@ -647,7 +794,7 @@ function App() {
                   ) : (
                     <div className="all-done"><span>✓</span><h2>事项已完成闭环</h2><p>所有步骤均已完成。请按单位要求归档和保存原始材料。</p></div>
                   )}
-                  <div className="ai-notice"><span>AI 辅助说明</span>{config?.aiEnabled ? "仅整理可读取的纯文本内容；结果需工作人员核实，不替代审批。" : "当前未启用 AI；材料需由工作人员自行核对，系统不会生成虚构分析。"}</div>
+                  <div className="ai-notice"><span>AI 辅助说明</span>{config?.aiEnabled ? "AI 结果仅供参考，工作人员必须核验原始材料和事实；解读会将附件文本发送至已选服务商。" : "请在“AI 设置”中选择阿里云或腾讯混元并配置 API Key 后解读附件。"}</div>
                 </section>
               </div>
               <div className="storage-note"><strong>数据与存储</strong><span>事项数据和附件直接读写 OSS；每次打开时从 OSS 加载最新事项。此静态页面不提供账号认证及多人并发写入保障。</span></div>
@@ -665,6 +812,16 @@ function App() {
           <label>事项说明<input name="description" maxLength={5000} placeholder="可选" /></label>
           {error && <p className="error-text">{error}</p>}
           <div className="modal-actions"><button type="button" className="secondary" onClick={() => setCreateOpen(false)}>取消</button><button className="primary" disabled={busy || !online}>{busy ? "正在创建…" : "创建事项"}</button></div>
+        </form>
+      </div>}
+
+      {renameOpen && selectedCase && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setRenameOpen(false); }}>
+        <form className="modal-card" onSubmit={(event) => void renameCase(event)}>
+          <button type="button" className="modal-close" aria-label="关闭" onClick={() => setRenameOpen(false)}>×</button>
+          <p className="eyebrow">事项管理</p><h2>修改事项名称</h2>
+          <label>事项名称 <span className="required">*</span><input name="title" required maxLength={160} defaultValue={selectedCase.title} /></label>
+          {error && <p className="error-text">{error}</p>}
+          <div className="modal-actions"><button type="button" className="secondary" onClick={() => setRenameOpen(false)}>取消</button><button className="primary" disabled={busy || !online}>{busy ? "正在保存…" : "保存名称"}</button></div>
         </form>
       </div>}
 
@@ -775,6 +932,58 @@ function ProcurementSettings({
           ))}
         </div>
         <div className="settings-footer"><p>每种采购模式至少保留 1 步，每种最多 50 步。只有当前步骤填写记录并标记完成后，系统才会开放下一步。</p><div><button type="button" className="secondary" onClick={onCancel}>取消</button><button className="primary" disabled={busy || !online}>{busy ? "正在保存…" : "保存四种模式设置"}</button></div></div>
+      </form>
+    </main>
+  );
+}
+
+function AiSettings({
+  initial,
+  busy,
+  onSave,
+  onCancel,
+}: {
+  initial: AiPreferences;
+  busy: boolean;
+  onSave: (preferences: AiPreferences) => void | Promise<void>;
+  onCancel: () => void;
+}) {
+  const [preferences, setPreferences] = useState(initial);
+
+  function changeProvider(provider: AiPreferences["provider"]) {
+    setPreferences({ ...getDefaultAiPreferences(provider), apiKey: preferences.apiKey });
+  }
+
+  return (
+    <main className="settings-page">
+      <div className="settings-heading">
+        <div><p className="eyebrow">AI 辅助整理</p><h1>AI 服务设置</h1><p>选择阿里云百炼或腾讯混元，配置 API Key 和模型后，可解读 PDF/TXT 附件并生成核对建议。</p></div>
+        <button className="secondary" onClick={onCancel}>返回事项台账</button>
+      </div>
+      <div className="settings-caution ai-settings-caution">
+        <strong>材料发送说明</strong>
+        <span>AI 服务商、模型和 API Key 会保存到 OSS 事项数据，其他设备打开应用后会自动读取。解读时会从 OSS 读取附件，在本机提取文本并直接发送给所选 AI 服务商；请确认材料符合单位的数据处理要求。</span>
+      </div>
+      <form className="ai-settings-form" onSubmit={(event) => { event.preventDefault(); onSave(preferences); }}>
+        <label>AI 服务商
+          <select value={preferences.provider} onChange={(event) => changeProvider(event.target.value as AiPreferences["provider"])}>
+            <option value="aliyun">阿里云百炼</option>
+            <option value="tencent">腾讯混元</option>
+          </select>
+        </label>
+        <label>API Key
+          <input type="password" autoComplete="new-password" value={preferences.apiKey} onChange={(event) => setPreferences((current) => ({ ...current, apiKey: event.target.value }))} placeholder="粘贴服务商控制台创建的 API Key" />
+        </label>
+        <label>模型名称
+          <input required value={preferences.model} onChange={(event) => setPreferences((current) => ({ ...current, model: event.target.value }))} />
+        </label>
+        <p className="muted">当前接口：{aiProviders[preferences.provider].endpoint}</p>
+        <div className="ai-provider-links">
+          {preferences.provider === "aliyun"
+            ? <a href="https://bailian.console.aliyun.com/" target="_blank" rel="noreferrer">打开阿里云百炼控制台</a>
+            : <a href="https://console.cloud.tencent.com/hunyuan/start" target="_blank" rel="noreferrer">打开腾讯混元控制台</a>}
+        </div>
+        <div className="settings-footer"><p>默认模型：{aiProviders[preferences.provider].model}。可按账号开通情况修改。</p><div><button type="button" className="secondary" disabled={busy} onClick={onCancel}>取消</button><button className="primary" disabled={busy}>{busy ? "正在保存到 OSS…" : "保存 AI 设置"}</button></div></div>
       </form>
     </main>
   );

@@ -77,6 +77,8 @@ export type CaseRecord = {
   title: string;
   description: string;
   source: string;
+  isImportant?: boolean;
+  isOnHold?: boolean;
   handlingPath: string | null;
   createdAt: string;
   updatedAt: string;

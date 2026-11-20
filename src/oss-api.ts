@@ -1,6 +1,7 @@
-import type { CaseRecord, HandlingPath, ProcurementMode, Stage, Step } from "./types";
+import type { Analysis, CaseRecord, HandlingPath, ProcurementMode, Stage, Step } from "./types";
 import { getObjectKey, getOssClient, signOssObject } from "./oss";
 import { ApiError } from "./api-error";
+import { getDefaultAiPreferences, type AiPreferences } from "./ai";
 
 type AuditEntry = {
   id: string;
@@ -19,7 +20,7 @@ type StoredData = {
   version: 1;
   cases: StoredCase[];
   audit: AuditEntry[];
-  settings: { procurementModes: ProcurementMode[] };
+  settings: { procurementModes: ProcurementMode[]; ai: AiPreferences };
   sync: { status: "success" | "failed" | "syncing" | "not_configured"; message: string; updatedAt: string | null };
 };
 type SyncStatus = StoredData["sync"];
@@ -95,7 +96,7 @@ function newData(): StoredData {
     version: 1,
     cases: [],
     audit: [],
-    settings: { procurementModes: structuredClone(defaultModes) },
+    settings: { procurementModes: structuredClone(defaultModes), ai: getDefaultAiPreferences() },
     sync: { status: "syncing", message: "正在从 OSS 初始化数据", updatedAt: new Date().toISOString() },
   };
 }
@@ -136,8 +137,13 @@ async function ensureLoaded(): Promise<void> {
         if (!remote || remote.version !== 1 || !Array.isArray(remote.cases) || !Array.isArray(remote.audit)) {
           throw new Error("OSS 业务 JSON 结构无效；为避免覆盖数据，已停止加载");
         }
-        remote.settings ??= { procurementModes: structuredClone(defaultModes) };
+        remote.settings ??= {
+          procurementModes: structuredClone(defaultModes),
+          ai: getDefaultAiPreferences(),
+        };
+        remote.settings.ai ??= getDefaultAiPreferences();
         if (!Array.isArray(remote.settings.procurementModes)) throw new Error("OSS 采购路径配置无效");
+        if (!isAiPreferences(remote.settings.ai)) throw new Error("OSS AI 服务配置无效");
         remote.cases.forEach((record) => {
           record.handlingPath ??= null;
           const processStep = record.steps?.find((step) => step.id === "process-handle");
@@ -225,7 +231,9 @@ function publicCase(record: StoredCase): CaseRecord {
 }
 
 function publicCases() {
-  return [...currentData().cases].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(publicCase);
+  return [...currentData().cases]
+    .sort((a, b) => Number(Boolean(b.isImportant)) - Number(Boolean(a.isImportant)) || b.updatedAt.localeCompare(a.updatedAt))
+    .map(publicCase);
 }
 
 function getSync() {
@@ -241,7 +249,8 @@ function createRecord(input: { title: string; source: string; description: strin
   const now = new Date().toISOString();
   return {
     id: crypto.randomUUID(), title: input.title.trim(), description: input.description.trim(),
-    source: input.source.trim(), createdAt: now, updatedAt: now, handlingPath: null, createdBy: ACTOR,
+    source: input.source.trim(), isImportant: false, isOnHold: false,
+    createdAt: now, updatedAt: now, handlingPath: null, createdBy: ACTOR,
     steps: stages.flatMap((stage) => stage.steps.map((step) => ({
       ...step, stageId: stage.id, stageTitle: stage.title, status: "pending" as const, note: "",
       completedAt: null, completedBy: null, attachments: [], humanReview: null,
@@ -263,6 +272,15 @@ function isProcurement(pathId: string | null): boolean {
 
 function error(status: number, code: string, message: string): never {
   throw new ApiError(message, status, code);
+}
+
+function isAiPreferences(value: unknown): value is AiPreferences {
+  if (!value || typeof value !== "object") return false;
+  const preferences = value as Record<string, unknown>;
+  return ["aliyun", "tencent"].includes(String(preferences.provider)) &&
+    typeof preferences.apiKey === "string" &&
+    typeof preferences.model === "string" &&
+    Boolean(preferences.model.trim());
 }
 
 function parseJsonBody(options: RequestInit): Record<string, unknown> {
@@ -380,7 +398,14 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
   const response = (record?: StoredCase) => ({ case: publicCase(record!), sync: getSync() });
 
   if (method === "GET" && segments.join("/") === "api/config") {
-    return { username: ACTOR, stages, handlingPaths, procurementModes: currentData().settings.procurementModes, aiEnabled: false, fileLimitBytes: MAX_FILE_SIZE };
+    const aiPreferences = currentData().settings.ai;
+    return {
+      username: ACTOR, stages, handlingPaths,
+      procurementModes: currentData().settings.procurementModes,
+      aiPreferences,
+      aiEnabled: Boolean(aiPreferences.apiKey),
+      fileLimitBytes: MAX_FILE_SIZE,
+    };
   }
   if (method === "GET" && segments.join("/") === "api/cases") return { cases: publicCases(), sync: getSync() };
   if (method === "GET" && segments.join("/") === "api/audit") return { audit: [...currentData().audit].slice(-500).reverse() };
@@ -397,6 +422,33 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
       currentData().settings.procurementModes = modes;
       addAudit("procurement_settings_updated", null, { modes: modes.map((mode) => ({ id: mode.id, stepCount: mode.steps.length })) });
       return { modes, sync: await save() };
+    }
+    if (method === "PUT" && segments.join("/") === "api/settings/ai") {
+      const input = {
+        provider: body.provider,
+        apiKey: body.apiKey,
+        model: body.model,
+      };
+      if (!isAiPreferences(input)) {
+        error(400, "INVALID_AI_SETTINGS", "请选择 AI 服务商并填写模型名称");
+      }
+      const previous = currentData().settings.ai;
+      const ai = {
+        provider: input.provider,
+        apiKey: input.apiKey.trim(),
+        model: input.model.trim(),
+      };
+      currentData().settings.ai = ai;
+      const auditLength = currentData().audit.length;
+      addAudit("ai_settings_updated", null, { provider: ai.provider, model: ai.model });
+      try {
+        const sync = await save();
+        return { aiPreferences: ai, aiEnabled: Boolean(ai.apiKey), sync };
+      } catch (reason) {
+        currentData().settings.ai = previous;
+        currentData().audit.length = auditLength;
+        throw reason;
+      }
     }
     if (method === "POST" && segments.join("/") === "api/sync/retry") {
       addAudit("oss_sync_retried", null);
@@ -418,12 +470,67 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
     addAudit("case_created", record.id);
     return { case: publicCase(record), sync: await save() };
   }
+  if (segments.length === 3 && method === "DELETE") {
+    const record = getCase(segments[2]);
+    const keys = [...new Set(record.steps.flatMap((step) => step.attachments.map((item) => item.objectKey)))];
+    const removableKeys = keys.filter((key) => !currentData().cases.some((other) =>
+      other.id !== record.id && other.steps.some((step) => step.attachments.some((item) => item.objectKey === key)),
+    ));
+    const previousCases = currentData().cases;
+    const auditLength = currentData().audit.length;
+    currentData().cases = previousCases.filter((item) => item.id !== record.id);
+    addAudit("case_deleted", record.id, { preservedSharedAttachments: keys.length - removableKeys.length });
+    let sync: SyncStatus;
+    try {
+      sync = await save();
+    } catch (reason) {
+      currentData().cases = previousCases;
+      currentData().audit.length = auditLength;
+      throw reason;
+    }
+    const cleanupErrors: string[] = [];
+    for (const key of removableKeys) {
+      try {
+        await getOssClient().delete(key);
+      } catch (reason) {
+        cleanupErrors.push(`${key}: ${reason instanceof Error ? reason.message : String(reason)}`);
+      }
+    }
+    return {
+      sync,
+      deletedAttachmentCount: removableKeys.length - cleanupErrors.length,
+      preservedAttachmentCount: keys.length - removableKeys.length,
+      cleanupErrors,
+    };
+  }
   if (segments.length === 3 && method === "GET") {
     return response(getCase(segments[2]));
+  }
+  if (segments.length === 3 && method === "PATCH") {
+    const record = getCase(segments[2]);
+    if (typeof body.title !== "string" || !body.title.trim() || body.title.trim().length > 160) {
+      error(400, "INVALID_TITLE", "事项名称必填且不能超过 160 个字符");
+    }
+    const previousTitle = record.title;
+    record.title = body.title.trim();
+    updateRecord(record);
+    addAudit("case_renamed", record.id, { previousTitle, title: record.title });
+    return { case: publicCase(record), sync: await save() };
   }
   if (segments.length < 4) error(404, "NOT_FOUND", "请求的功能不存在");
   const record = getCase(segments[2]);
   const resource = segments[3];
+
+  if (resource === "flags" && segments.length === 4 && method === "PATCH") {
+    if (typeof body.isImportant !== "boolean" || typeof body.isOnHold !== "boolean") {
+      error(400, "INVALID_CASE_FLAGS", "事项重要和搁置状态必须是布尔值");
+    }
+    record.isImportant = body.isImportant;
+    record.isOnHold = body.isOnHold;
+    updateRecord(record);
+    addAudit("case_flags_updated", record.id, { isImportant: record.isImportant, isOnHold: record.isOnHold });
+    return { case: publicCase(record), sync: await save() };
+  }
 
   if (resource === "steps" && segments.length === 5 && method === "PATCH") {
     const step = getStep(record, segments[4]);
@@ -507,18 +614,25 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
     if (!(file instanceof File)) error(400, "FILE_REQUIRED", "请选择要上传的材料");
     if (!["application/pdf", "text/plain"].includes(file.type)) error(400, "UNSUPPORTED_FILE_TYPE", "仅支持 PDF 和纯文本文件");
     if (file.size > MAX_FILE_SIZE) error(400, "LIMIT_FILE_SIZE", "单个文件最大 10 MiB");
-    const id = crypto.randomUUID();
     const filename = file.name.replace(/[^\p{L}\p{N}._ -]/gu, "_").slice(0, 120) || "attachment";
-    const key = getObjectKey(`attachments/${record.id}/${id}`);
-    try {
-      await getOssClient().put(key, file, { headers: { "Content-Type": file.type, "Cache-Control": "private, no-store" } });
-    } catch (reason) {
-      throw new ApiError(`附件上传到 OSS 失败：${reason instanceof Error ? reason.message : String(reason)}`, 502, "OSS_ATTACHMENT_SYNC_FAILED");
+    const shared = currentData().cases.flatMap((item) => item.steps.flatMap((candidate) =>
+      candidate.attachments as StoredAttachment[],
+    )).find((item) => item.filename === filename && item.size === file.size);
+    const id = crypto.randomUUID();
+    const key = shared?.objectKey ?? getObjectKey(`attachments/${record.id}/${id}`);
+    if (!shared) {
+      try {
+        await getOssClient().put(key, file, { headers: { "Content-Type": file.type, "Cache-Control": "private, no-store" } });
+      } catch (reason) {
+        throw new ApiError(`附件上传到 OSS 失败：${reason instanceof Error ? reason.message : String(reason)}`, 502, "OSS_ATTACHMENT_SYNC_FAILED");
+      }
     }
     const attachment: StoredAttachment = {
       id, filename, contentType: file.type, size: file.size, objectKey: key, uploadedAt: new Date().toISOString(),
-      uploadedBy: ACTOR, syncStatus: "success", syncMessage: "附件已同步到 OSS",
-      extractedText: file.type === "text/plain" ? (await file.text()).slice(0, 24000) : "", analysis: null,
+      uploadedBy: ACTOR, syncStatus: "success",
+      syncMessage: shared ? "已关联 OSS 中的同名同大小附件，未重复上传" : "附件已同步到 OSS",
+      extractedText: shared?.extractedText ?? (file.type === "text/plain" ? (await file.text()).slice(0, 24000) : ""),
+      analysis: shared?.analysis ?? null,
     };
     step.attachments.push(attachment);
     updateRecord(record);
@@ -530,18 +644,51 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
     const attachment = step.attachments.find((item) => item.id === segments[6]);
     if (!attachment) error(404, "ATTACHMENT_NOT_FOUND", "未找到该材料");
     if (body.confirm !== true) error(400, "CONFIRM_REQUIRED", "删除材料需要明确确认");
-    try {
-      await getOssClient().delete(attachment.objectKey);
-    } catch (reason) {
-      throw new ApiError(`OSS 附件删除失败，材料记录未变更：${reason instanceof Error ? reason.message : String(reason)}`, 502, "OSS_DELETE_FAILED");
-    }
+    const referenceCount = currentData().cases.reduce((count, item) =>
+      count + item.steps.reduce((stepCount, candidate) =>
+        stepCount + candidate.attachments.filter((entry) => entry.objectKey === attachment.objectKey).length, 0), 0);
+    const referencedByOtherCase = currentData().cases.some((other) =>
+      other.id !== record.id && other.steps.some((candidate) =>
+        candidate.attachments.some((item) => item.objectKey === attachment.objectKey),
+      ),
+    );
+    if (referencedByOtherCase) error(409, "ATTACHMENT_SHARED", "该附件还关联其他事项，不能删除");
+    const sameCaseReferences = referenceCount - 1;
+    const previousAttachments = step.attachments;
+    const previousUpdatedAt = record.updatedAt;
+    const auditLength = currentData().audit.length;
     step.attachments = step.attachments.filter((item) => item.id !== attachment.id);
     updateRecord(record);
     addAudit("attachment_deleted", record.id, { stepId: step.id, attachmentId: attachment.id });
-    return { case: publicCase(record), sync: await save() };
+    let sync: SyncStatus;
+    try {
+      sync = await save();
+    } catch (reason) {
+      step.attachments = previousAttachments;
+      record.updatedAt = previousUpdatedAt;
+      currentData().audit.length = auditLength;
+      throw reason;
+    }
+    let cleanupError: string | null = null;
+    if (sameCaseReferences === 0) {
+      try {
+        await getOssClient().delete(attachment.objectKey);
+      } catch (reason) {
+        cleanupError = reason instanceof Error ? reason.message : String(reason);
+      }
+    }
+    return { case: publicCase(record), sync, cleanupError };
   }
   if (resource === "steps" && segments.length === 8 && segments[5] === "attachments" && segments[7] === "analyze" && method === "POST") {
-    error(503, "AI_NOT_CONFIGURED", "AI 未启用或配置不完整；请人工核对材料");
+    const step = getStep(record, segments[4]);
+    const attachment = step.attachments.find((item) => item.id === segments[6]) as StoredAttachment | undefined;
+    if (!attachment) error(404, "ATTACHMENT_NOT_FOUND", "未找到该材料");
+    if (!body.analysis || typeof body.analysis !== "object") error(400, "INVALID_ANALYSIS", "AI 分析结果无效");
+    attachment.analysis = body.analysis as Analysis;
+    if (typeof body.extractedText === "string") attachment.extractedText = body.extractedText.slice(0, 24000);
+    updateRecord(record);
+    addAudit("attachment_analyzed", record.id, { stepId: step.id, attachmentId: attachment.id });
+    return { analysis: attachment.analysis, sync: await save() };
   }
   error(404, "NOT_FOUND", "请求的功能不存在");
 }
