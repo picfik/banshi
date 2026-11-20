@@ -226,7 +226,7 @@ function getStep(record: StoredCase, stepId: string): Step {
   return step;
 }
 
-function getAttachmentOwner(record: StoredCase, step: Step, procurementStepId: string | null): Step | ProcurementStep {
+function getAttachmentOwner(step: Step, procurementStepId: string | null): Step | ProcurementStep {
   if (!procurementStepId) return step;
   if (step.id !== "process-handle") error(404, "PROCUREMENT_STEP_NOT_FOUND", "未找到该采购步骤");
   const procurementStep = step.procurementSteps?.find((item) => item.id === procurementStepId);
@@ -692,7 +692,7 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
   if (resource === "steps" && segments.length === 6 && segments[5] === "attachments" && method === "POST") {
     const step = getStep(record, segments[4]);
     requireCurrent(record, step);
-    const attachmentOwner = getAttachmentOwner(record, step, parsedUrl.searchParams.get("procurementStepId"));
+    const attachmentOwner = getAttachmentOwner(step, parsedUrl.searchParams.get("procurementStepId"));
     if (!(options.body instanceof FormData)) error(400, "FILE_REQUIRED", "请选择要上传的材料");
     const file = options.body.get("file");
     if (!(file instanceof File)) error(400, "FILE_REQUIRED", "请选择要上传的材料");
@@ -752,7 +752,7 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
   }
   if (resource === "steps" && segments.length === 7 && segments[5] === "attachments" && method === "DELETE") {
     const step = getStep(record, segments[4]);
-    const attachmentOwner = getAttachmentOwner(record, step, parsedUrl.searchParams.get("procurementStepId"));
+    const attachmentOwner = getAttachmentOwner(step, parsedUrl.searchParams.get("procurementStepId"));
     const attachment = attachmentOwner.attachments.find((item) => item.id === segments[6]);
     if (!attachment) error(404, "ATTACHMENT_NOT_FOUND", "未找到该材料");
     if (body.confirm !== true) error(400, "CONFIRM_REQUIRED", "删除材料需要明确确认");
@@ -794,7 +794,7 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
   }
   if (resource === "steps" && segments.length === 8 && segments[5] === "attachments" && segments[7] === "analyze" && method === "POST") {
     const step = getStep(record, segments[4]);
-    const attachmentOwner = getAttachmentOwner(record, step, parsedUrl.searchParams.get("procurementStepId"));
+    const attachmentOwner = getAttachmentOwner(step, parsedUrl.searchParams.get("procurementStepId"));
     const attachment = attachmentOwner.attachments.find((item) => item.id === segments[6]) as StoredAttachment | undefined;
     if (!attachment) error(404, "ATTACHMENT_NOT_FOUND", "未找到该材料");
     if (!body.analysis || typeof body.analysis !== "object") error(400, "INVALID_ANALYSIS", "AI 分析结果无效");
