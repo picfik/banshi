@@ -73,6 +73,7 @@ function App() {
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [online, setOnline] = useState(navigator.onLine);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [autoSaveStatus, setAutoSaveStatus] = useState("");
 
   const currentStep = useMemo(
     () => selectedCase?.steps.find((step) => step.status !== "completed") ?? null,
@@ -161,6 +162,55 @@ function App() {
     setProcurementNoteDraft(currentProcurementStep?.note ?? "");
   }, [currentProcurementStep?.id, currentProcurementStep?.note]);
 
+  useEffect(() => {
+    if (
+      !selectedCase || !activeStep || activeStep.status === "completed" || !online ||
+      (noteDraft === activeStep.note && (activeStep.id !== "process-assign" || pathDraft === (selectedCase.handlingPath ?? "")))
+    ) return;
+
+    setAutoSaveStatus("正在实时保存…");
+    const timer = window.setTimeout(() => {
+      void api<CaseResponse>(`/api/cases/${selectedCase.id}/steps/${activeStep.id}`, {
+        method: "PATCH",
+        body: jsonBody({
+          note: noteDraft,
+          ...(activeStep.id === "process-assign" ? { handlingPath: pathDraft } : {}),
+        }),
+      }).then((result) => {
+        setSelectedCase(result.case);
+        setSync(result.sync);
+        setAutoSaveStatus("已实时保存");
+      }).catch((reason) => {
+        setAutoSaveStatus(reason instanceof Error ? `保存失败：${reason.message}` : "保存失败，请检查网络");
+      });
+    }, 700);
+
+    return () => window.clearTimeout(timer);
+  }, [selectedCase, activeStep, noteDraft, pathDraft, online]);
+
+  useEffect(() => {
+    if (
+      !selectedCase || !currentProcurementStep || currentProcurementStep.status === "completed" || !online ||
+      procurementNoteDraft === currentProcurementStep.note
+    ) return;
+
+    setAutoSaveStatus("正在实时保存…");
+    const timer = window.setTimeout(() => {
+      void api<CaseResponse>(
+        `/api/cases/${selectedCase.id}/procurement-steps/${currentProcurementStep.id}`,
+        { method: "PATCH", body: jsonBody({ note: procurementNoteDraft }) },
+      ).then((result) => {
+        setSelectedCase(result.case);
+        setSync(result.sync);
+        setAutoSaveStatus("已实时保存");
+      }).catch((reason) => {
+        setAutoSaveStatus(reason instanceof Error ? `保存失败：${reason.message}` : "保存失败，请检查网络");
+      });
+    }, 700);
+
+    return () => window.clearTimeout(timer);
+  }, [selectedCase, currentProcurementStep, procurementNoteDraft, online]);
+
   async function createCase(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -213,17 +263,6 @@ function App() {
     }
   }
 
-  async function saveNote() {
-    if (!selectedCase || !activeStep) return;
-    await runStepAction(() => api(`/api/cases/${selectedCase.id}/steps/${activeStep.id}`, {
-      method: "PATCH",
-      body: jsonBody({
-        note: noteDraft,
-        ...(activeStep.id === "process-assign" ? { handlingPath: pathDraft } : {}),
-      }),
-    }));
-  }
-
   async function completeStep() {
     if (!selectedCase || !activeStep) return;
     if (!window.confirm(`确认完成“${activeStep.title}”？完成后才能进入下一步。`)) return;
@@ -242,14 +281,6 @@ function App() {
       }
       await api(`/api/cases/${selectedCase.id}/steps/${activeStep.id}/complete`, { method: "POST", body: "{}" });
     });
-  }
-
-  async function saveProcurementNote() {
-    if (!selectedCase || !currentProcurementStep) return;
-    await runStepAction(() => api(
-      `/api/cases/${selectedCase.id}/procurement-steps/${currentProcurementStep.id}`,
-      { method: "PATCH", body: jsonBody({ note: procurementNoteDraft }) },
-    ));
   }
 
   async function completeProcurementStep() {
@@ -837,8 +868,8 @@ function App() {
                             <div className="procurement-record">
                               <label className="field-label" htmlFor="procurement-note">本采购步骤记录 <span>必填后方可推进</span></label>
                               <textarea id="procurement-note" rows={4} maxLength={10000} disabled={busy || !online} value={procurementNoteDraft} onChange={(event) => setProcurementNoteDraft(event.target.value)} placeholder="记录本步骤实际办理情况、依据及待核实事项…" />
+                              {autoSaveStatus && <p className="hint-text" role="status">{autoSaveStatus}</p>}
                               <div className="procurement-actions">
-                                <button className="secondary" disabled={busy || !online || procurementNoteDraft === currentProcurementStep.note} onClick={() => void saveProcurementNote()}>保存本步记录</button>
                                 <button className="primary" disabled={busy || !online || !procurementNoteDraft.trim()} onClick={() => void completeProcurementStep()}>完成本步并进入下一步 →</button>
                               </div>
                             </div>
@@ -857,6 +888,7 @@ function App() {
                           <label className="field-label" htmlFor="step-note">办理记录 <span>必填后方可完成此步</span></label>
                           <textarea id="step-note" rows={5} value={noteDraft} maxLength={10000} disabled={!online} onChange={(event) => setNoteDraft(event.target.value)} placeholder="记录实际办理情况、依据及需要跟进的问题…" />
                           <div className="textarea-foot"><span>请准确记录事实，敏感信息按单位要求处理。</span><span>{noteDraft.length}/10000</span></div>
+                          {autoSaveStatus && <p className="hint-text" role="status">{autoSaveStatus}</p>}
 
                           <div className="materials-head"><div><h3>办理依据材料</h3><span>支持多选并自动上传；Office、PDF、文档及压缩文件，单个文件最大 100 MB</span></div><span>{activeStep.attachments.length} 份</span></div>
                           <div className="upload-row">
@@ -877,7 +909,6 @@ function App() {
                             </div>
                           )}
                           <div className="step-actions">
-                            <button className="secondary" disabled={busy || !online || (noteDraft === activeStep.note && (activeStep.id !== "process-assign" || pathDraft === (selectedCase.handlingPath ?? "")))} onClick={() => void saveNote()}>保存记录</button>
                             <button className="primary" disabled={busy || !online || !noteDraft.trim() || (activeStep.id === "process-assign" && !pathDraft) || (activeStep.id === "process-handle" && selectedHandlingPath?.procurement && Boolean(activeStep.procurementSteps?.some((step) => step.status !== "completed"))) || (activeStep.requiresReview && activeStep.humanReview?.decision !== "approved")} onClick={() => void completeStep()}>
                               {busy ? "处理中…" : "完成此步并继续"} <span>→</span>
                             </button>
