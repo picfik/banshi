@@ -53,7 +53,7 @@ h1, h2, h3, p { margin-top: 0; }
 .case-filter-tabs button { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 5px 8px; border: 1px solid #e1e7e1; border-radius: 7px; color: #66766d; background: #fff; font-size: 13px; }
 .case-filter-tabs button.active { border-color: #8baa96; color: #315848; background: #edf4ee; font-weight: 700; }
 .case-filter-tabs button span { min-width: 18px; height: 18px; display: inline-grid; place-items: center; border-radius: 9px; background: #eef1ed; font-size: 12px; }
-.case-list { width: 100%; min-height: 0; min-width: 0; display: grid; align-content: start; grid-template-columns: minmax(0, 1fr); gap: 8px; overflow-y: auto; padding-right: 2px; }
+.case-list { width: 100%; flex: 1 1 auto; min-height: 0; min-width: 0; display: grid; align-content: start; grid-template-columns: minmax(0, 1fr); gap: 8px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding-right: 4px; }
 .case-card { width: 100%; min-width: 0; max-width: 100%; display: block; overflow: hidden; padding: 13px 12px 11px; text-align: left; border: 1px solid transparent; border-radius: 10px; background: transparent; }
 .case-card:hover { background: #f0f4f0; }
 .case-card.selected { border-color: #d8e5db; background: #edf4ee; }
@@ -177,6 +177,7 @@ textarea::placeholder, input::placeholder { color: #b3bdb5; }
 .danger-icon { width: 24px; height: 24px; color: #a96a62; border: 0; }
 .analysis-card { grid-column: 1 / -1; margin-top: 3px; padding: 12px; border-radius: 7px; background: #f5f8f3; }
 .analysis-title { display: flex; justify-content: space-between; color: #49705b; font-size: 16px; font-weight: 700; }
+.analysis-title > div { display: flex; align-items: center; gap: 8px; }
 .analysis-title small { color: #9aa69e; font-size: 16px; font-weight: 400; }
 .analysis-summary, .analysis-group { color: #69786f; font-size: 16px; line-height: 1.7; }
 .analysis-summary { margin: 8px 0; }
@@ -245,6 +246,7 @@ textarea::placeholder, input::placeholder { color: #b3bdb5; }
 .todo-reminder { width: min(100%, 520px); }
 .todo-reminder-list { display: grid; gap: 8px; margin: 14px 0; }
 .todo-reminder-list article { display: grid; gap: 4px; padding: 10px 12px; border-left: 3px solid #d39a45; background: #fff8ea; }
+.selection-todo-button { position: fixed; z-index: 50; min-height: 36px; transform: translateX(-50%); padding: 7px 12px; border: 0; border-radius: 18px; color: #fff; background: #315f4d; box-shadow: 0 8px 24px rgba(24, 55, 43, .24); font-size: 14px; font-weight: 700; white-space: nowrap; }
 .todo-reminder-list span { color: #6d796f; font-size: 13px; }
 .audit-list { display: grid; gap: 0; max-height: 50vh; overflow-y: auto; margin: 18px 0; }
 .audit-list article { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid #eef0ed; }

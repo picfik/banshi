@@ -4,7 +4,7 @@ import multer from "multer";
 import path from "node:path";
 import { createReadStream } from "node:fs";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { mkdir, unlink } from "node:fs/promises";
+import { mkdir, readFile, unlink } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
   isSupportedAttachmentName,
@@ -79,6 +79,38 @@ async function readTextPreview(filePath) {
     if (text.length >= MAX_ATTACHMENT_TEXT_PREVIEW_CHARS) break;
   }
   return text.slice(0, MAX_ATTACHMENT_TEXT_PREVIEW_CHARS);
+}
+
+async function readOfficePreview(filePath, filename) {
+  const extension = path.extname(filename).toLowerCase();
+  const bytes = await readFile(filePath);
+  if ([".docx", ".docm", ".dotx", ".dotm", ".docb"].includes(extension)) {
+    const mammoth = await import("mammoth");
+    const result = await mammoth.extractRawText({ buffer: bytes });
+    return result.value.slice(0, MAX_ATTACHMENT_TEXT_PREVIEW_CHARS).trim();
+  }
+  if ([".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".xlam", ".xls", ".xlt", ".xla", ".csv", ".tsv"].includes(extension)) {
+    const XLSX = await import("xlsx");
+    const workbook = XLSX.read(bytes, { type: "buffer", cellDates: true });
+    return workbook.SheetNames.slice(0, 20).map((name) => {
+      const sheet = workbook.Sheets[name];
+      return `【工作表：${name}】\n${XLSX.utils.sheet_to_csv(sheet, { blankrows: false })}`;
+    }).join("\n\n").slice(0, MAX_ATTACHMENT_TEXT_PREVIEW_CHARS).trim();
+  }
+  if ([".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppam", ".odp", ".odt", ".ods"].includes(extension)) {
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(bytes);
+    const texts = [];
+    for (const name of Object.keys(zip.files)) {
+      if (!/(?:ppt\/slides\/slide\d+\.xml|word\/document\.xml|content\.xml)$/i.test(name)) continue;
+      const xml = await zip.file(name)?.async("text");
+      if (!xml) continue;
+      const text = xml.replace(/<[^>]+>/g, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/\s+/g, " ").trim();
+      if (text) texts.push(text);
+    }
+    return texts.join("\n").slice(0, MAX_ATTACHMENT_TEXT_PREVIEW_CHARS).trim();
+  }
+  return "";
 }
 
 function publicSync(sync, data) {
@@ -751,7 +783,9 @@ export async function createApp({
       uploadedBy: req.username,
       syncStatus,
       syncMessage,
-      extractedText: contentType === "text/plain" ? await readTextPreview(diskPath) : "",
+      extractedText: contentType === "text/plain"
+        ? await readTextPreview(diskPath)
+        : await readOfficePreview(diskPath, filename).catch(() => ""),
       analysis: null,
     };
     await dataStore.transaction(async (data) => {

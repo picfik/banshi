@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import JSZip from "jszip";
+import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
 import { api, getAttachmentUrl, jsonBody } from "./api";
 import { aiProviders, analyzeAttachment, getDefaultAiPreferences, type AiPreferences } from "./ai";
@@ -89,6 +90,14 @@ function App() {
   const [todoOpen, setTodoOpen] = useState(false);
   const [todoEditing, setTodoEditing] = useState<TemporaryTodo | null>(null);
   const [todoReminderOpen, setTodoReminderOpen] = useState(false);
+  const [selectionMenu, setSelectionMenu] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [hiddenAnalysisIds, setHiddenAnalysisIds] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("banshi-hidden-analysis") ?? "[]") as string[];
+    } catch {
+      return [];
+    }
+  });
 
   const currentStep = useMemo(
     () => selectedCase?.steps.find((step) => step.status !== "completed") ?? null,
@@ -147,6 +156,31 @@ function App() {
   useEffect(() => {
     void loadWorkspace();
   }, [loadWorkspace]);
+
+  useEffect(() => {
+    const handleSelection = () => {
+      const selection = window.getSelection();
+      const text = selection?.toString().trim() ?? "";
+      if (!text) {
+        setSelectionMenu(null);
+        return;
+      }
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      if (!range) return;
+      const rect = range.getBoundingClientRect();
+      setSelectionMenu({
+        text: text.slice(0, 160),
+        x: Math.min(window.innerWidth - 150, Math.max(8, rect.left + rect.width / 2)),
+        y: Math.max(8, rect.bottom + 8),
+      });
+    };
+    document.addEventListener("mouseup", handleSelection);
+    document.addEventListener("keyup", handleSelection);
+    return () => {
+      document.removeEventListener("mouseup", handleSelection);
+      document.removeEventListener("keyup", handleSelection);
+    };
+  }, []);
 
   useEffect(() => {
     if (todos.length === 0) return;
@@ -459,8 +493,12 @@ function App() {
       setError("请先在 AI 设置中选择服务并填写 API Key");
       return;
     }
-    if (attachment.contentType !== "application/pdf" && attachment.contentType !== "text/plain") {
-      setError("AI 解读目前仅支持 PDF 和纯文本文件");
+    const canAnalyze = attachment.contentType === "application/pdf" ||
+      attachment.contentType === "text/plain" ||
+      [".docx", ".docm", ".dotx", ".dotm", ".docb", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".xlam", ".xls", ".xlt", ".xla", ".csv", ".tsv", ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppam", ".odp", ".odt", ".ods", ".rtf", ".html", ".htm", ".xml"]
+        .includes(attachment.filename.slice(attachment.filename.lastIndexOf(".")).toLowerCase());
+    if (!canAnalyze) {
+      setError("该文件格式暂不支持 AI 解读；Office 文档请使用 .docx/.xlsx/.pptx 等格式");
       return;
     }
     if (!window.confirm("附件文本将发送给当前选择的 AI 服务进行分析。请确认已获授权，且材料符合单位的数据处理要求。")) return;
@@ -592,6 +630,30 @@ function App() {
     }
   }
 
+  async function addSelectedTextTodo(text: string) {
+    const now = new Date();
+    const dueDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api<{ todo: TemporaryTodo }>("/api/todos", {
+        method: "POST",
+        body: jsonBody({
+          title: text,
+          dueDate,
+          assignee: config?.username ?? "待分配",
+        }),
+      });
+      setTodos((current) => [...current, result.todo]);
+      setSelectionMenu(null);
+      window.getSelection()?.removeAllRanges();
+    } catch (reason) {
+      handleError(reason);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveTodo(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -687,7 +749,10 @@ function App() {
     return (
       <div className="attachment-list">
         {attachments.map((attachment) => {
-          const canAnalyze = attachment.contentType === "application/pdf" || attachment.contentType === "text/plain";
+          const canAnalyze = attachment.contentType === "application/pdf" ||
+            attachment.contentType === "text/plain" ||
+            [".docx", ".docm", ".dotx", ".dotm", ".docb", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".xlam", ".xls", ".xlt", ".xla", ".csv", ".tsv", ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppam", ".odp", ".odt", ".ods", ".rtf", ".html", ".htm", ".xml"]
+              .includes(attachment.filename.slice(attachment.filename.lastIndexOf(".")).toLowerCase());
           const sizeLabel = attachment.size >= 1024 * 1024
             ? `${(attachment.size / (1024 * 1024)).toFixed(1)} MB`
             : `${(attachment.size / 1024).toFixed(0)} KB`;
@@ -699,10 +764,24 @@ function App() {
                 <small>{sizeLabel} · {attachment.syncMessage}</small>
               </div>
               <div className="attachment-actions">
-                <button className="text-button" disabled={busy || !online || !config?.aiEnabled || !canAnalyze} title={!canAnalyze ? "AI 解读目前仅支持 PDF 和纯文本文件" : config?.aiEnabled ? "使用配置的 AI 解读附件" : "请先配置 AI 服务"} onClick={() => void analyzeCaseAttachment(attachment, procurementStepId)}>{canAnalyze ? attachment.analysis ? "重新解读" : "AI 解读" : "暂不可解读"}</button>
+                <button className="text-button" disabled={busy || !online || !config?.aiEnabled || !canAnalyze} title={!canAnalyze ? "AI 解读支持 PDF、TXT 和常用 Office 文档" : config?.aiEnabled ? "使用配置的 AI 解读附件" : "请先配置 AI 服务"} onClick={() => void analyzeCaseAttachment(attachment, procurementStepId)}>{canAnalyze ? attachment.analysis ? "重新解读" : "AI 解读" : "暂不可解读"}</button>
                 <button className="icon-button danger-icon" aria-label="删除材料" disabled={busy || !online} onClick={() => void deleteAttachment(attachment.id, procurementStepId)}>×</button>
               </div>
-              {attachment.analysis && <AnalysisCard analysis={attachment.analysis} />}
+              {attachment.analysis && (
+                <AnalysisCard
+                  analysis={attachment.analysis}
+                  visible={!hiddenAnalysisIds.includes(attachment.id)}
+                  onToggle={() => {
+                    setHiddenAnalysisIds((current) => {
+                      const next = current.includes(attachment.id)
+                        ? current.filter((id) => id !== attachment.id)
+                        : [...current, attachment.id];
+                      localStorage.setItem("banshi-hidden-analysis", JSON.stringify(next));
+                      return next;
+                    });
+                  }}
+                />
+              )}
             </article>
           );
         })}
@@ -1090,6 +1169,18 @@ function App() {
           <div className="modal-actions"><button className="primary" onClick={() => setTodoReminderOpen(false)}>知道了</button></div>
         </section>
       </div>}
+      {selectionMenu && (
+        <button
+          type="button"
+          className="selection-todo-button"
+          style={{ left: selectionMenu.x, top: selectionMenu.y }}
+          disabled={busy}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => void addSelectedTextTodo(selectionMenu.text)}
+        >
+          ＋ 加为临时待办
+        </button>
+      )}
       {auditChecklistOpen && selectedCase && (
         <AuditChecklist
           record={selectedCase}
@@ -1101,7 +1192,15 @@ function App() {
   );
 }
 
-function AnalysisCard({ analysis }: { analysis: NonNullable<Step["attachments"][number]["analysis"]> }) {
+function AnalysisCard({
+  analysis,
+  visible,
+  onToggle,
+}: {
+  analysis: NonNullable<Step["attachments"][number]["analysis"]>;
+  visible: boolean;
+  onToggle: () => void;
+}) {
   const groups = [
     ["材料关键信息", analysis.keyFacts],
     ["待核对点", analysis.checks],
@@ -1111,10 +1210,15 @@ function AnalysisCard({ analysis }: { analysis: NonNullable<Step["attachments"][
   ] as const;
   return (
     <div className="analysis-card">
-      <div className="analysis-title"><span>AI 材料整理</span><small>{formatTime(analysis.generatedAt)}</small></div>
-      <p className="analysis-summary">{analysis.summary}</p>
-      {groups.filter(([, items]) => items.length > 0).map(([title, items]) => <div className="analysis-group" key={title}><strong>{title}</strong><ul>{items.map((item, index) => <li key={`${title}-${index}`}>{item}</li>)}</ul></div>)}
-      <p className="analysis-disclaimer">{analysis.disclaimer}</p>
+      <div className="analysis-title">
+        <span>AI 材料整理</span>
+        <div><small>{formatTime(analysis.generatedAt)}</small><button type="button" className="text-button" onClick={onToggle}>{visible ? "隐藏" : "显示"}</button></div>
+      </div>
+      {visible && <>
+        <p className="analysis-summary">{analysis.summary}</p>
+        {groups.filter(([, items]) => items.length > 0).map(([title, items]) => <div className="analysis-group" key={title}><strong>{title}</strong><ul>{items.map((item, index) => <li key={`${title}-${index}`}>{item}</li>)}</ul></div>)}
+        <p className="analysis-disclaimer">{analysis.disclaimer}</p>
+      </>}
     </div>
   );
 }
@@ -1129,6 +1233,7 @@ function AuditChecklist({
   onClose: () => void;
 }) {
   const [generatedAt] = useState(() => new Date().toISOString());
+  const reportRef = useRef<HTMLElement>(null);
   const currentStep = record.steps.find((step) => step.status !== "completed");
   const procurementSteps = record.steps.find((step) => step.id === "process-handle")?.procurementSteps ?? [];
   const completedCount = record.steps.filter((step) => step.status === "completed").length +
@@ -1140,40 +1245,37 @@ function AuditChecklist({
   ]);
   const downloadPackage = async () => {
     const zip = new JSZip();
-    const pdf = new jsPDF({ unit: "pt", format: "a4" });
-    let y = 50;
-    pdf.setFontSize(16);
-    pdf.text("Matters Handling Audit Report", 40, y);
-    y += 28;
-    pdf.setFontSize(10);
-    const reportLines = [
-      `Matter: ${record.title}`,
-      `Source: ${record.source}`,
-      `Handling path: ${handlingPathTitle}`,
-      `Generated: ${formatTime(generatedAt)}`,
-      `Description: ${record.description || "Not filled"}`,
-      "",
-      ...record.steps.flatMap((step, index) => [
-        `${index + 1}. ${step.stageTitle} - ${step.title}`,
-        `Status: ${step.status === "completed" ? "Completed" : "Pending"}`,
-        `Record: ${step.note || "Not filled"}`,
-        ...(step.procurementSteps ?? []).flatMap((procurementStep) => [
-          `  - ${procurementStep.title}`,
-          `  Record: ${procurementStep.note || "Not filled"}`,
-        ]),
-        "",
-      ]),
-    ];
-    for (const line of reportLines) {
-      const wrapped = pdf.splitTextToSize(line, 515);
-      if (y + wrapped.length * 13 > 780) {
-        pdf.addPage();
-        y = 50;
+    if (reportRef.current) {
+      const canvas = await html2canvas(reportRef.current, {
+        scale: 1.5,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+        logging: false,
+        windowWidth: reportRef.current.scrollWidth,
+        windowHeight: reportRef.current.scrollHeight,
+      });
+      const pdf = new jsPDF({ unit: "pt", format: "a4", orientation: "portrait" });
+      const pageWidth = 595;
+      const pageHeight = 842;
+      const margin = 20;
+      const contentWidth = pageWidth - margin * 2;
+      const sliceHeight = Math.floor((pageHeight - margin * 2) * canvas.width / contentWidth);
+      let offset = 0;
+      let firstPage = true;
+      while (offset < canvas.height) {
+        if (!firstPage) pdf.addPage();
+        const height = Math.min(sliceHeight, canvas.height - offset);
+        const slice = document.createElement("canvas");
+        slice.width = canvas.width;
+        slice.height = height;
+        slice.getContext("2d")?.drawImage(canvas, 0, offset, canvas.width, height, 0, 0, canvas.width, height);
+        const imageHeight = height * contentWidth / canvas.width;
+        pdf.addImage(slice.toDataURL("image/jpeg", 0.92), "JPEG", margin, margin, contentWidth, imageHeight);
+        offset += height;
+        firstPage = false;
       }
-      pdf.text(wrapped, 40, y);
-      y += wrapped.length * 13;
+      zip.file("事项办理报告.pdf", pdf.output("arraybuffer"));
     }
-    zip.file("事项办理报告.pdf", pdf.output("arraybuffer"));
 
     const seen = new Set<string>();
     for (const attachment of attachments) {
@@ -1181,11 +1283,14 @@ function AuditChecklist({
       if (seen.has(key)) continue;
       seen.add(key);
       try {
-        const response = await fetch(`/api/cases/${record.id}/attachments/${attachment.id}`, { credentials: "include" });
-        if (!response.ok) throw new Error(`附件下载失败：${attachment.filename}`);
-        zip.file(attachment.filename, await response.arrayBuffer());
-      } catch {
-        zip.file(`下载失败/${attachment.filename}.txt`, `附件下载失败：${attachment.filename}`);
+        const downloadUrl = await getAttachmentUrl(attachment.objectKey);
+        const response = await fetch(downloadUrl);
+        if (!response.ok) throw new Error("附件下载失败");
+        const bytes = await response.arrayBuffer();
+        if (bytes.byteLength === 0) throw new Error("附件为空");
+        zip.file(attachment.filename, bytes);
+      } catch (reason) {
+        zip.file(`下载失败/${attachment.filename}.txt`, `附件下载失败：${attachment.filename}\n${reason instanceof Error ? reason.message : "未知错误"}`);
       }
     }
     const blob = await zip.generateAsync({ type: "blob" });
@@ -1222,7 +1327,7 @@ function AuditChecklist({
           <button className="primary" onClick={() => window.print()}>打印 / 保存为 PDF</button>
         </div>
       </div>
-      <article className="audit-checklist-document">
+      <article ref={reportRef} className="audit-checklist-document">
         <header className="audit-document-header">
           <p>事项办理材料</p>
           <h1>事项办理送审清单</h1>

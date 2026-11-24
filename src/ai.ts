@@ -52,10 +52,58 @@ async function extractPdfText(bytes: ArrayBuffer): Promise<string> {
       pages.push(content.items.flatMap((item) => "str" in item ? [item.str] : []).join(" "));
       if (pages.join("\n").length >= MAX_SOURCE_CHARS) break;
     }
+
     return pages.join("\n").slice(0, MAX_SOURCE_CHARS).trim();
   } finally {
     await document.destroy();
   }
+}
+
+function officeExtension(filename: string): string {
+  return filename.slice(filename.lastIndexOf(".")).toLowerCase();
+}
+
+async function extractOfficeText(bytes: ArrayBuffer, filename: string): Promise<string> {
+  const extension = officeExtension(filename);
+  if ([".docx", ".docm", ".dotx", ".dotm", ".docb"].includes(extension)) {
+    const mammoth = await import("mammoth");
+    const result = await mammoth.extractRawText({ arrayBuffer: bytes });
+    return result.value.slice(0, MAX_SOURCE_CHARS).trim();
+  }
+  if ([".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".xlam", ".xls", ".xlt", ".xla", ".csv", ".tsv"].includes(extension)) {
+    const XLSX = await import("xlsx");
+    const workbook = XLSX.read(bytes, { type: "array", cellDates: true });
+    const sheets = workbook.SheetNames.slice(0, 20).map((name) => {
+      const sheet = workbook.Sheets[name];
+      return `【工作表：${name}】\n${XLSX.utils.sheet_to_csv(sheet, { blankrows: false })}`;
+    });
+    return sheets.join("\n\n").slice(0, MAX_SOURCE_CHARS).trim();
+  }
+  if ([".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppam", ".odp", ".odt", ".ods", ".rtf", ".html", ".htm", ".xml"].includes(extension)) {
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(bytes);
+    const entries = Object.keys(zip.files).filter((name) =>
+      /(?:ppt\/slides\/slide\d+\.xml|word\/document\.xml|content\.xml|.*slides?.*\.xml)$/i.test(name),
+    );
+    const texts: string[] = [];
+    for (const entry of entries) {
+      const xml = await zip.file(entry)?.async("text");
+      if (!xml) continue;
+      const text = xml
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&amp;/gi, "&")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#([0-9]+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
+        .replace(/\s+/g, " ")
+        .trim();
+      if (text) texts.push(text);
+    }
+    return texts.join("\n").slice(0, MAX_SOURCE_CHARS).trim();
+  }
+  return "";
 }
 
 function parseAnalysis(content: string): Omit<Analysis, "generatedAt" | "disclaimer"> {
@@ -87,12 +135,17 @@ export async function analyzeAttachment(
   if (!preferences.apiKey.trim()) throw new Error("请先在 AI 设置中填写 API Key");
   const object = await getOssClient().get(attachment.objectKey);
   const bytes = await asArrayBuffer(object.content);
+  const extension = officeExtension(attachment.filename);
   const extractedText = attachment.contentType === "text/plain"
     ? new TextDecoder().decode(bytes).slice(0, MAX_SOURCE_CHARS).trim()
     : attachment.contentType === "application/pdf"
       ? await extractPdfText(bytes)
-      : "";
-  if (!extractedText) throw new Error("附件中没有可提取的文本；扫描版 PDF 暂不支持 OCR");
+      : await extractOfficeText(bytes, attachment.filename);
+  if (!extractedText) {
+    throw new Error(extension === ".doc" || extension === ".xls" || extension === ".ppt"
+      ? "旧版 .doc/.xls/.ppt 格式暂不支持直接解读，请转换为 .docx/.xlsx/.pptx 后再试"
+      : "附件中没有可提取的文本；扫描版 PDF 或图片暂不支持 OCR");
+  }
 
   const provider = PROVIDERS[preferences.provider];
   let response: Response;
