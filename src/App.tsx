@@ -883,7 +883,7 @@ function App() {
           <span className={`sync-pill ${sync.status}`}><i />{statusLabel(sync.status)}</span>
           {(sync.status === "failed" || cases.some((record) => record.steps.some((step) => step.attachments.some((attachment) => attachment.syncStatus === "failed")))) && <button className="quiet-button" onClick={retrySync} disabled={busy}>重试同步</button>}
           {installPrompt && <button className="quiet-button" onClick={() => void installPrompt.prompt()}>安装应用</button>}
-          <button className="quiet-button" onClick={() => { setTodoEditing(null); setTodoOpen(true); }}>临时待办（未完成 {todos.filter((todo) => !todo.isCompleted).length}/已完成 {todos.filter((todo) => todo.isCompleted).length}）</button>
+          <button className="quiet-button" onClick={() => { setTodoEditing(null); setTodoOpen(true); }}>临时待办（{todos.filter((todo) => !todo.isCompleted).length}/{todos.filter((todo) => todo.isCompleted).length}）</button>
           <button className="quiet-button" onClick={() => setSettingsPage("procurement")}>采购路径设置</button>
           <button className="quiet-button" onClick={() => setSettingsPage("ai")}>AI 设置</button>
           <span className="user-chip">OSS 直连</span>
