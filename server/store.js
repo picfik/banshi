@@ -190,6 +190,16 @@ export function createDataStore(filePath) {
         data.todos = [];
         migrated = true;
       }
+      for (const todo of data.todos) {
+        if (typeof todo.isCompleted !== "boolean") {
+          todo.isCompleted = false;
+          migrated = true;
+        }
+        if (todo.completedAt === undefined) {
+          todo.completedAt = null;
+          migrated = true;
+        }
+      }
       if (!data.settings) {
         data.settings = { procurementModes: getDefaultProcurementModes() };
         migrated = true;

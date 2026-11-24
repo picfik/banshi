@@ -90,6 +90,7 @@ function App() {
   const [todoOpen, setTodoOpen] = useState(false);
   const [todoEditing, setTodoEditing] = useState<TemporaryTodo | null>(null);
   const [todoReminderOpen, setTodoReminderOpen] = useState(false);
+  const [todoFilter, setTodoFilter] = useState<"pending" | "completed">("pending");
   const [selectionMenu, setSelectionMenu] = useState<{ text: string; x: number; y: number } | null>(null);
   const [hiddenAnalysisIds, setHiddenAnalysisIds] = useState<string[]>(() => {
     try {
@@ -661,6 +662,7 @@ function App() {
       title: form.get("title"),
       dueDate: form.get("dueDate"),
       assignee: form.get("assignee"),
+      isCompleted: todoEditing?.isCompleted ?? false,
     };
     setBusy(true);
     setError("");
@@ -673,6 +675,27 @@ function App() {
         : [...current, result.todo]);
       setTodoEditing(null);
       setTodoOpen(false);
+    } catch (reason) {
+      handleError(reason);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleTodoCompleted(todo: TemporaryTodo) {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api<{ todo: TemporaryTodo }>(`/api/todos/${todo.id}`, {
+        method: "PATCH",
+        body: jsonBody({
+          title: todo.title,
+          dueDate: todo.dueDate,
+          assignee: todo.assignee,
+          isCompleted: !todo.isCompleted,
+        }),
+      });
+      setTodos((current) => current.map((item) => item.id === todo.id ? result.todo : item));
     } catch (reason) {
       handleError(reason);
     } finally {
@@ -1145,14 +1168,31 @@ function App() {
               <button className="primary" disabled={busy}>{busy ? "正在保存…" : todoEditing ? "保存修改" : "新增待办"}</button>
             </div>
           </form>
+          <div className="todo-filter-tabs" aria-label="临时待办状态分类">
+            <button type="button" className={todoFilter === "pending" ? "active" : ""} onClick={() => setTodoFilter("pending")}>
+              未完成 <span>{todos.filter((todo) => !todo.isCompleted).length}</span>
+            </button>
+            <button type="button" className={todoFilter === "completed" ? "active" : ""} onClick={() => setTodoFilter("completed")}>
+              已完成 <span>{todos.filter((todo) => todo.isCompleted).length}</span>
+            </button>
+          </div>
           <div className="todo-list">
-            {[...todos].sort((a, b) => a.dueDate.localeCompare(b.dueDate)).map((todo) => (
-              <article key={todo.id}>
+            {[...todos]
+              .filter((todo) => todoFilter === "completed" ? todo.isCompleted : !todo.isCompleted)
+              .sort((a, b) => a.dueDate.localeCompare(b.dueDate) ||
+                b.updatedAt.localeCompare(a.updatedAt))
+              .map((todo) => (
+              <article key={todo.id} className={todo.isCompleted ? "completed" : ""}>
                 <div><strong>{todo.title}</strong><span>截止 {todo.dueDate} · 经办人 {todo.assignee}</span></div>
-                <div><button className="text-button" onClick={() => setTodoEditing(todo)}>修改</button><button className="text-button danger-text" onClick={() => void deleteTodo(todo)}>删除</button></div>
+                <div>
+                  <button className="text-button" onClick={() => setTodoEditing(todo)}>修改</button>
+                  <button className="text-button" onClick={() => void toggleTodoCompleted(todo)}>{todo.isCompleted ? "恢复未完成" : "标记完成"}</button>
+                  <button className="text-button danger-text" onClick={() => void deleteTodo(todo)}>删除</button>
+                </div>
               </article>
             ))}
-            {todos.length === 0 && <p className="todo-empty">暂无临时待办</p>}
+            {todos.filter((todo) => todoFilter === "completed" ? todo.isCompleted : !todo.isCompleted).length === 0 &&
+              <p className="todo-empty">{todoFilter === "completed" ? "暂无已完成待办" : "暂无未完成待办"}</p>}
           </div>
         </section>
       </div>}

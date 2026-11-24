@@ -97,6 +97,8 @@ export type TemporaryTodo = {
   title: string;
   dueDate: string;
   assignee: string;
+  isCompleted: boolean;
+  completedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };

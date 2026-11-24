@@ -956,7 +956,9 @@ export async function createApp({
 
   app.get("/api/todos", (req, res) => {
     res.json({ todos: [...(dataStore.data.todos ?? [])].sort((a, b) =>
-      a.dueDate.localeCompare(b.dueDate) || b.updatedAt.localeCompare(a.updatedAt),
+      Number(Boolean(a.isCompleted)) - Number(Boolean(b.isCompleted)) ||
+      a.dueDate.localeCompare(b.dueDate) ||
+      b.updatedAt.localeCompare(a.updatedAt),
     ) });
   });
 
@@ -967,8 +969,21 @@ export async function createApp({
     if (!title || title.length > 160) return sendError(res, 400, "INVALID_TODO_TITLE", "事件名称必填且不能超过 160 个字符");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return sendError(res, 400, "INVALID_TODO_DUE_DATE", "请选择有效的截止日期");
     if (!assignee || assignee.length > 80) return sendError(res, 400, "INVALID_TODO_ASSIGNEE", "经办人必填且不能超过 80 个字符");
+    if (req.body?.isCompleted !== undefined && typeof req.body.isCompleted !== "boolean") {
+      return sendError(res, 400, "INVALID_TODO_STATUS", "待办完成状态必须为布尔值");
+    }
     const now = new Date().toISOString();
-    const todo = { id: randomUUID(), title, dueDate, assignee, createdAt: now, updatedAt: now };
+    const isCompleted = req.body?.isCompleted === true;
+    const todo = {
+      id: randomUUID(),
+      title,
+      dueDate,
+      assignee,
+      isCompleted,
+      completedAt: isCompleted ? now : null,
+      createdAt: now,
+      updatedAt: now,
+    };
     await dataStore.transaction(async (data) => {
       if (!Array.isArray(data.todos)) data.todos = [];
       data.todos.push(todo);
@@ -988,7 +1003,14 @@ export async function createApp({
     if (!title || title.length > 160) return sendError(res, 400, "INVALID_TODO_TITLE", "事件名称必填且不能超过 160 个字符");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return sendError(res, 400, "INVALID_TODO_DUE_DATE", "请选择有效的截止日期");
     if (!assignee || assignee.length > 80) return sendError(res, 400, "INVALID_TODO_ASSIGNEE", "经办人必填且不能超过 80 个字符");
+    if (req.body?.isCompleted !== undefined && typeof req.body.isCompleted !== "boolean") {
+      return sendError(res, 400, "INVALID_TODO_STATUS", "待办完成状态必须为布尔值");
+    }
     await dataStore.transaction(async (data) => {
+      if (req.body?.isCompleted !== undefined) {
+        todo.isCompleted = req.body.isCompleted;
+        todo.completedAt = req.body.isCompleted ? new Date().toISOString() : null;
+      }
       todo.title = title;
       todo.dueDate = dueDate;
       todo.assignee = assignee;

@@ -149,6 +149,10 @@ async function ensureLoaded(): Promise<void> {
           ai: getDefaultAiPreferences(),
         };
         if (!Array.isArray(remote.todos)) remote.todos = [];
+        remote.todos.forEach((todo) => {
+          todo.isCompleted = Boolean(todo.isCompleted);
+          todo.completedAt = todo.completedAt ?? null;
+        });
         remote.settings.ai ??= getDefaultAiPreferences();
         if (!Array.isArray(remote.settings.procurementModes)) throw new Error("OSS 采购路径配置无效");
         if (!isAiPreferences(remote.settings.ai)) throw new Error("OSS AI 服务配置无效");
@@ -456,7 +460,11 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
   if (method === "GET" && segments.join("/") === "api/cases") return { cases: publicCases(), sync: getSync() };
   if (method === "GET" && segments.join("/") === "api/audit") return { audit: [...currentData().audit].slice(-500).reverse() };
   if (method === "GET" && segments.join("/") === "api/todos") {
-    return { todos: [...currentData().todos].sort((a, b) => a.dueDate.localeCompare(b.dueDate) || b.updatedAt.localeCompare(a.updatedAt)) };
+    return { todos: [...currentData().todos].sort((a, b) =>
+      Number(Boolean(a.isCompleted)) - Number(Boolean(b.isCompleted)) ||
+      a.dueDate.localeCompare(b.dueDate) ||
+      b.updatedAt.localeCompare(a.updatedAt),
+    ) };
   }
   if (method === "POST" && segments.join("/") === "api/todos") {
     const title = typeof body.title === "string" ? body.title.trim() : "";
@@ -466,7 +474,7 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) error(400, "INVALID_TODO_DUE_DATE", "请选择有效的截止日期");
     if (!assignee || assignee.length > 80) error(400, "INVALID_TODO_ASSIGNEE", "经办人必填且不能超过 80 个字符");
     const now = new Date().toISOString();
-    const todo: TemporaryTodo = { id: crypto.randomUUID(), title, dueDate, assignee, createdAt: now, updatedAt: now };
+    const todo: TemporaryTodo = { id: crypto.randomUUID(), title, dueDate, assignee, isCompleted: false, completedAt: null, createdAt: now, updatedAt: now };
     currentData().todos.push(todo);
     addAudit("todo_created", null, { todoId: todo.id, title, dueDate, assignee });
     return { todo, sync: await save() };
@@ -480,6 +488,11 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
     if (!title || title.length > 160) error(400, "INVALID_TODO_TITLE", "事件名称必填且不能超过 160 个字符");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) error(400, "INVALID_TODO_DUE_DATE", "请选择有效的截止日期");
     if (!assignee || assignee.length > 80) error(400, "INVALID_TODO_ASSIGNEE", "经办人必填且不能超过 80 个字符");
+    if (body.isCompleted !== undefined && typeof body.isCompleted !== "boolean") error(400, "INVALID_TODO_STATUS", "待办完成状态必须为布尔值");
+    if (body.isCompleted !== undefined) {
+      todo.isCompleted = body.isCompleted;
+      todo.completedAt = body.isCompleted ? new Date().toISOString() : null;
+    }
     Object.assign(todo, { title, dueDate, assignee, updatedAt: new Date().toISOString() });
     addAudit("todo_updated", null, { todoId: todo.id, title, dueDate, assignee });
     return { todo, sync: await save() };

@@ -83,6 +83,8 @@ test("temporary todos support create, update, delete and validation", async (t) 
   });
   assert.equal(created.status, 201);
   const todoId = created.body.todo.id;
+  assert.equal(created.body.todo.isCompleted, false);
+  assert.equal(created.body.todo.completedAt, null);
 
   const updated = await context.agent.patch(`/api/todos/${todoId}`).send({
     title: "提交季度材料并归档",
@@ -91,6 +93,16 @@ test("temporary todos support create, update, delete and validation", async (t) 
   });
   assert.equal(updated.status, 200);
   assert.equal(updated.body.todo.assignee, "李四");
+
+  const completed = await context.agent.patch(`/api/todos/${todoId}`).send({
+    title: "提交季度材料并归档",
+    dueDate: "2026-12-03",
+    assignee: "李四",
+    isCompleted: true,
+  });
+  assert.equal(completed.status, 200);
+  assert.equal(completed.body.todo.isCompleted, true);
+  assert.ok(completed.body.todo.completedAt);
 
   const listed = await context.agent.get("/api/todos");
   assert.equal(listed.body.todos.length, 1);
