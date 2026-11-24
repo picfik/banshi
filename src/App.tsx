@@ -189,6 +189,7 @@ function App() {
       const now = new Date();
       const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
       const due = todos.filter((todo) => {
+        if (todo.isCompleted) return false;
         const due = new Date(`${todo.dueDate}T23:59:59`);
         const remainingDays = Math.ceil((due.getTime() - now.getTime()) / 86400000);
         return remainingDays >= 0 && remainingDays <= 3;
@@ -1202,6 +1203,7 @@ function App() {
           <p className="eyebrow">临时待办提醒</p><h2>以下事项即将到期</h2>
           <div className="todo-reminder-list">
             {todos.filter((todo) => {
+              if (todo.isCompleted) return false;
               const remaining = Math.ceil((new Date(`${todo.dueDate}T23:59:59`).getTime() - Date.now()) / 86400000);
               return remaining >= 0 && remaining <= 3;
             }).map((todo) => <article key={todo.id}><strong>{todo.title}</strong><span>截止日期：{todo.dueDate}</span><span>经办人：{todo.assignee}</span></article>)}
