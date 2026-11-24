@@ -1,4 +1,4 @@
-import type { Analysis, CaseRecord, HandlingPath, ProcurementMode, ProcurementStep, Stage, Step } from "./types";
+import type { Analysis, CaseRecord, HandlingPath, ProcurementMode, ProcurementStep, Stage, Step, TemporaryTodo } from "./types";
 import { getObjectKey, getOssClient, signOssObject } from "./oss";
 import { ApiError } from "./api-error";
 import { getDefaultAiPreferences, type AiPreferences } from "./ai";
@@ -24,6 +24,7 @@ type StoredCase = CaseRecord & { createdBy?: string };
 type StoredData = {
   version: 1;
   cases: StoredCase[];
+  todos: TemporaryTodo[];
   audit: AuditEntry[];
   settings: { procurementModes: ProcurementMode[]; ai: AiPreferences };
   sync: { status: "success" | "failed" | "syncing" | "not_configured"; message: string; updatedAt: string | null };
@@ -100,6 +101,7 @@ function newData(): StoredData {
   return {
     version: 1,
     cases: [],
+    todos: [],
     audit: [],
     settings: { procurementModes: structuredClone(defaultModes), ai: getDefaultAiPreferences() },
     sync: { status: "syncing", message: "正在从 OSS 初始化数据", updatedAt: new Date().toISOString() },
@@ -146,6 +148,7 @@ async function ensureLoaded(): Promise<void> {
           procurementModes: structuredClone(defaultModes),
           ai: getDefaultAiPreferences(),
         };
+        if (!Array.isArray(remote.todos)) remote.todos = [];
         remote.settings.ai ??= getDefaultAiPreferences();
         if (!Array.isArray(remote.settings.procurementModes)) throw new Error("OSS 采购路径配置无效");
         if (!isAiPreferences(remote.settings.ai)) throw new Error("OSS AI 服务配置无效");
@@ -452,6 +455,43 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
   }
   if (method === "GET" && segments.join("/") === "api/cases") return { cases: publicCases(), sync: getSync() };
   if (method === "GET" && segments.join("/") === "api/audit") return { audit: [...currentData().audit].slice(-500).reverse() };
+  if (method === "GET" && segments.join("/") === "api/todos") {
+    return { todos: [...currentData().todos].sort((a, b) => a.dueDate.localeCompare(b.dueDate) || b.updatedAt.localeCompare(a.updatedAt)) };
+  }
+  if (method === "POST" && segments.join("/") === "api/todos") {
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    const dueDate = typeof body.dueDate === "string" ? body.dueDate : "";
+    const assignee = typeof body.assignee === "string" ? body.assignee.trim() : "";
+    if (!title || title.length > 160) error(400, "INVALID_TODO_TITLE", "事件名称必填且不能超过 160 个字符");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) error(400, "INVALID_TODO_DUE_DATE", "请选择有效的截止日期");
+    if (!assignee || assignee.length > 80) error(400, "INVALID_TODO_ASSIGNEE", "经办人必填且不能超过 80 个字符");
+    const now = new Date().toISOString();
+    const todo: TemporaryTodo = { id: crypto.randomUUID(), title, dueDate, assignee, createdAt: now, updatedAt: now };
+    currentData().todos.push(todo);
+    addAudit("todo_created", null, { todoId: todo.id, title, dueDate, assignee });
+    return { todo, sync: await save() };
+  }
+  if (segments.length === 3 && segments[0] === "api" && segments[1] === "todos" && method === "PATCH") {
+    const todo = currentData().todos.find((item) => item.id === segments[2]);
+    if (!todo) error(404, "TODO_NOT_FOUND", "未找到该临时待办");
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    const dueDate = typeof body.dueDate === "string" ? body.dueDate : "";
+    const assignee = typeof body.assignee === "string" ? body.assignee.trim() : "";
+    if (!title || title.length > 160) error(400, "INVALID_TODO_TITLE", "事件名称必填且不能超过 160 个字符");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) error(400, "INVALID_TODO_DUE_DATE", "请选择有效的截止日期");
+    if (!assignee || assignee.length > 80) error(400, "INVALID_TODO_ASSIGNEE", "经办人必填且不能超过 80 个字符");
+    Object.assign(todo, { title, dueDate, assignee, updatedAt: new Date().toISOString() });
+    addAudit("todo_updated", null, { todoId: todo.id, title, dueDate, assignee });
+    return { todo, sync: await save() };
+  }
+  if (segments.length === 3 && segments[0] === "api" && segments[1] === "todos" && method === "DELETE") {
+    const todo = currentData().todos.find((item) => item.id === segments[2]);
+    if (!todo) error(404, "TODO_NOT_FOUND", "未找到该临时待办");
+    currentData().todos = currentData().todos.filter((item) => item.id !== todo.id);
+    addAudit("todo_deleted", null, { todoId: todo.id, title: todo.title });
+    await save();
+    return { ok: true };
+  }
   if (method === "GET" && segments.join("/") === "api/search") {
     const query = (parsedUrl.searchParams.get("q") ?? "").trim();
     if (!query || query.length > 120) error(400, "INVALID_SEARCH_QUERY", "请输入 1 至 120 个字符的搜索内容");

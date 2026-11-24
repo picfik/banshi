@@ -166,6 +166,7 @@ export function createInitialData() {
   return {
     version: 1,
     cases: [],
+    todos: [],
     audit: [],
     settings: { procurementModes: getDefaultProcurementModes() },
     sync: { status: "not_configured", message: "OSS 未配置" },
@@ -185,6 +186,10 @@ export function createDataStore(filePath) {
       }
       data = parsed;
       let migrated = false;
+      if (!Array.isArray(data.todos)) {
+        data.todos = [];
+        migrated = true;
+      }
       if (!data.settings) {
         data.settings = { procurementModes: getDefaultProcurementModes() };
         migrated = true;

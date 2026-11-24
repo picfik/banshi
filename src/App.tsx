@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
+import JSZip from "jszip";
+import { jsPDF } from "jspdf";
 import { api, getAttachmentUrl, jsonBody } from "./api";
 import { aiProviders, analyzeAttachment, getDefaultAiPreferences, type AiPreferences } from "./ai";
-import type { Attachment, CaseRecord, HandlingPath, ProcurementMode, ProcurementStep, Stage, Step, SyncStatus } from "./types";
+import type { Attachment, CaseRecord, HandlingPath, ProcurementMode, ProcurementStep, Stage, Step, SyncStatus, TemporaryTodo } from "./types";
 import { MAX_ATTACHMENT_SIZE_BYTES, SUPPORTED_ATTACHMENT_EXTENSIONS } from "../shared/attachments.js";
 
 type CaseResponse = { case: CaseRecord; sync: SyncStatus };
@@ -48,6 +50,14 @@ function getCaseProgress(record: CaseRecord) {
   return { done, total, percent: total > 0 ? Math.round(done / total * 100) : 0 };
 }
 
+function getCaseCategory(record: CaseRecord) {
+  if (record.isOnHold) return "held";
+  const progress = getCaseProgress(record);
+  if (progress.done === 0) return "pending";
+  if (progress.done === progress.total) return "completed";
+  return "handling";
+}
+
 function App() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -74,6 +84,11 @@ function App() {
   const [online, setOnline] = useState(navigator.onLine);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [autoSaveStatus, setAutoSaveStatus] = useState("");
+  const [caseFilter, setCaseFilter] = useState<"all" | "pending" | "handling" | "completed" | "held">("all");
+  const [todos, setTodos] = useState<TemporaryTodo[]>([]);
+  const [todoOpen, setTodoOpen] = useState(false);
+  const [todoEditing, setTodoEditing] = useState<TemporaryTodo | null>(null);
+  const [todoReminderOpen, setTodoReminderOpen] = useState(false);
 
   const currentStep = useMemo(
     () => selectedCase?.steps.find((step) => step.status !== "completed") ?? null,
@@ -118,6 +133,8 @@ function App() {
     try {
       const cfg = await api<ConfigResponse>("/api/config");
       setConfig(cfg);
+      const todoResult = await api<{ todos: TemporaryTodo[] }>("/api/todos");
+      setTodos(todoResult.todos);
       await refreshCases(null);
       setError("");
     } catch (reason) {
@@ -130,6 +147,29 @@ function App() {
   useEffect(() => {
     void loadWorkspace();
   }, [loadWorkspace]);
+
+  useEffect(() => {
+    if (todos.length === 0) return;
+    const checkReminders = () => {
+      const now = new Date();
+      const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      const due = todos.filter((todo) => {
+        const due = new Date(`${todo.dueDate}T23:59:59`);
+        const remainingDays = Math.ceil((due.getTime() - now.getTime()) / 86400000);
+        return remainingDays >= 0 && remainingDays <= 3;
+      });
+      if (due.length === 0) return;
+      const remindedKey = `banshi-todo-reminded-${today}`;
+      const alreadyReminded = JSON.parse(localStorage.getItem(remindedKey) ?? "[]") as string[];
+      const newReminders = due.filter((todo) => !alreadyReminded.includes(todo.id));
+      if (newReminders.length === 0) return;
+      localStorage.setItem(remindedKey, JSON.stringify([...alreadyReminded, ...newReminders.map((todo) => todo.id)]));
+      setTodoReminderOpen(true);
+    };
+    checkReminders();
+    const timer = window.setInterval(checkReminders, 60 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [todos]);
 
   useEffect(() => {
     const onlineChange = () => setOnline(navigator.onLine);
@@ -552,6 +592,46 @@ function App() {
     }
   }
 
+  async function saveTodo(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const payload = {
+      title: form.get("title"),
+      dueDate: form.get("dueDate"),
+      assignee: form.get("assignee"),
+    };
+    setBusy(true);
+    setError("");
+    try {
+      const result = todoEditing
+        ? await api<{ todo: TemporaryTodo }>(`/api/todos/${todoEditing.id}`, { method: "PATCH", body: jsonBody(payload) })
+        : await api<{ todo: TemporaryTodo }>("/api/todos", { method: "POST", body: jsonBody(payload) });
+      setTodos((current) => todoEditing
+        ? current.map((todo) => todo.id === todoEditing.id ? result.todo : todo)
+        : [...current, result.todo]);
+      setTodoEditing(null);
+      setTodoOpen(false);
+    } catch (reason) {
+      handleError(reason);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteTodo(todo: TemporaryTodo) {
+    if (!window.confirm(`确定删除临时待办“${todo.title}”？`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/todos/${todo.id}`, { method: "DELETE" });
+      setTodos((current) => current.filter((item) => item.id !== todo.id));
+    } catch (reason) {
+      handleError(reason);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function showAudit() {
     setBusy(true);
     setError("");
@@ -700,6 +780,7 @@ function App() {
           <span className={`sync-pill ${sync.status}`}><i />{statusLabel(sync.status)}</span>
           {(sync.status === "failed" || cases.some((record) => record.steps.some((step) => step.attachments.some((attachment) => attachment.syncStatus === "failed")))) && <button className="quiet-button" onClick={retrySync} disabled={busy}>重试同步</button>}
           {installPrompt && <button className="quiet-button" onClick={() => void installPrompt.prompt()}>安装应用</button>}
+          <button className="quiet-button" onClick={() => { setTodoEditing(null); setTodoOpen(true); }}>临时待办{todos.length > 0 ? ` (${todos.length})` : ""}</button>
           <button className="quiet-button" onClick={() => setSettingsPage("procurement")}>采购路径设置</button>
           <button className="quiet-button" onClick={() => setSettingsPage("ai")}>AI 设置</button>
           <span className="user-chip">OSS 直连</span>
@@ -716,25 +797,39 @@ function App() {
           {cases.length === 0 ? (
             <div className="empty-sidebar"><span>▤</span><strong>还没有事项</strong><p>创建第一条事项，按步骤记录办理过程。</p></div>
           ) : (
-            <div className="case-list">
-              {cases.map((record) => {
-                const progress = getCaseProgress(record);
-                return (
-                  <button key={record.id} className={`case-card ${record.id === selectedId ? "selected" : ""}`} onClick={() => void selectCase(record)}>
-                    <span className="case-card-title">{record.title}</span>
-                    <span className="case-card-source">{record.source}</span>
-                    {(record.isImportant || record.isOnHold) && (
-                      <span className="case-card-badges">
-                        {record.isImportant && <span className="case-badge important">★ 重要</span>}
-                        {record.isOnHold && <span className="case-badge on-hold">搁置</span>}
-                      </span>
-                    )}
-                    <span className="case-progress"><span style={{ width: `${progress.percent}%` }} /></span>
-                    <span className="case-card-foot"><span>{progress.done === progress.total ? "已闭环" : `已完成 ${progress.done}/${progress.total} 步`}</span><span>{progress.percent}%</span></span>
-                  </button>
-                );
-              })}
-            </div>
+            <>
+              <div className="case-filter-tabs" aria-label="事项状态筛选">
+                {([
+                  ["all", "全部"],
+                  ["handling", "办理中"],
+                  ["pending", "未办理"],
+                  ["completed", "已完成"],
+                  ["held", "搁置"],
+                ] as const).map(([value, label]) => {
+                  const count = value === "all" ? cases.length : cases.filter((record) => getCaseCategory(record) === value).length;
+                  return <button key={value} className={caseFilter === value ? "active" : ""} onClick={() => setCaseFilter(value)}>{label}<span>{count}</span></button>;
+                })}
+              </div>
+              <div className="case-list">
+                {cases.filter((record) => caseFilter === "all" || getCaseCategory(record) === caseFilter).map((record) => {
+                  const progress = getCaseProgress(record);
+                  return (
+                    <button key={record.id} className={`case-card ${record.id === selectedId ? "selected" : ""}`} onClick={() => void selectCase(record)}>
+                      <span className="case-card-title">{record.title}</span>
+                      <span className="case-card-source">{record.source}</span>
+                      {(record.isImportant || record.isOnHold) && (
+                        <span className="case-card-badges">
+                          {record.isImportant && <span className="case-badge important">★ 重要</span>}
+                          {record.isOnHold && <span className="case-badge on-hold">搁置</span>}
+                        </span>
+                      )}
+                      <span className="case-progress"><span style={{ width: `${progress.percent}%` }} /></span>
+                      <span className="case-card-foot"><span>{progress.done === progress.total ? "已闭环" : `已完成 ${progress.done}/${progress.total} 步`}</span><span>{progress.percent}%</span></span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
           )}
           <button className="audit-link" onClick={() => void showAudit()}>查看操作审计记录 <span>↗</span></button>
         </aside>
@@ -956,6 +1051,45 @@ function App() {
           <p className="privacy-note">审计记录保存在 OSS 业务 JSON 中；此 MVP 不提供独立防篡改审计存储。</p>
         </section>
       </div>}
+      {todoOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setTodoOpen(false); }}>
+        <section className="modal-card todo-modal">
+          <button type="button" className="modal-close" aria-label="关闭" onClick={() => setTodoOpen(false)}>×</button>
+          <p className="eyebrow">临时待办</p><h2>待办提醒</h2>
+          <form className="todo-form" onSubmit={(event) => void saveTodo(event)}>
+            <label>事件名称 <span className="required">*</span><input name="title" required maxLength={160} defaultValue={todoEditing?.title ?? ""} /></label>
+            <div className="todo-form-row">
+              <label>截止日期 <span className="required">*</span><input name="dueDate" type="date" required defaultValue={todoEditing?.dueDate ?? ""} /></label>
+              <label>经办人 <span className="required">*</span><input name="assignee" required maxLength={80} defaultValue={todoEditing?.assignee ?? ""} /></label>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="secondary" onClick={() => { setTodoEditing(null); }}>清空</button>
+              <button className="primary" disabled={busy}>{busy ? "正在保存…" : todoEditing ? "保存修改" : "新增待办"}</button>
+            </div>
+          </form>
+          <div className="todo-list">
+            {[...todos].sort((a, b) => a.dueDate.localeCompare(b.dueDate)).map((todo) => (
+              <article key={todo.id}>
+                <div><strong>{todo.title}</strong><span>截止 {todo.dueDate} · 经办人 {todo.assignee}</span></div>
+                <div><button className="text-button" onClick={() => setTodoEditing(todo)}>修改</button><button className="text-button danger-text" onClick={() => void deleteTodo(todo)}>删除</button></div>
+              </article>
+            ))}
+            {todos.length === 0 && <p className="todo-empty">暂无临时待办</p>}
+          </div>
+        </section>
+      </div>}
+      {todoReminderOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setTodoReminderOpen(false); }}>
+        <section className="modal-card todo-reminder">
+          <button type="button" className="modal-close" aria-label="关闭" onClick={() => setTodoReminderOpen(false)}>×</button>
+          <p className="eyebrow">临时待办提醒</p><h2>以下事项即将到期</h2>
+          <div className="todo-reminder-list">
+            {todos.filter((todo) => {
+              const remaining = Math.ceil((new Date(`${todo.dueDate}T23:59:59`).getTime() - Date.now()) / 86400000);
+              return remaining >= 0 && remaining <= 3;
+            }).map((todo) => <article key={todo.id}><strong>{todo.title}</strong><span>截止日期：{todo.dueDate}</span><span>经办人：{todo.assignee}</span></article>)}
+          </div>
+          <div className="modal-actions"><button className="primary" onClick={() => setTodoReminderOpen(false)}>知道了</button></div>
+        </section>
+      </div>}
       {auditChecklistOpen && selectedCase && (
         <AuditChecklist
           record={selectedCase}
@@ -1004,6 +1138,66 @@ function AuditChecklist({
     ...step.attachments,
     ...(step.procurementSteps ?? []).flatMap((procurementStep) => procurementStep.attachments ?? []),
   ]);
+  const downloadPackage = async () => {
+    const zip = new JSZip();
+    const pdf = new jsPDF({ unit: "pt", format: "a4" });
+    let y = 50;
+    pdf.setFontSize(16);
+    pdf.text("Matters Handling Audit Report", 40, y);
+    y += 28;
+    pdf.setFontSize(10);
+    const reportLines = [
+      `Matter: ${record.title}`,
+      `Source: ${record.source}`,
+      `Handling path: ${handlingPathTitle}`,
+      `Generated: ${formatTime(generatedAt)}`,
+      `Description: ${record.description || "Not filled"}`,
+      "",
+      ...record.steps.flatMap((step, index) => [
+        `${index + 1}. ${step.stageTitle} - ${step.title}`,
+        `Status: ${step.status === "completed" ? "Completed" : "Pending"}`,
+        `Record: ${step.note || "Not filled"}`,
+        ...(step.procurementSteps ?? []).flatMap((procurementStep) => [
+          `  - ${procurementStep.title}`,
+          `  Record: ${procurementStep.note || "Not filled"}`,
+        ]),
+        "",
+      ]),
+    ];
+    for (const line of reportLines) {
+      const wrapped = pdf.splitTextToSize(line, 515);
+      if (y + wrapped.length * 13 > 780) {
+        pdf.addPage();
+        y = 50;
+      }
+      pdf.text(wrapped, 40, y);
+      y += wrapped.length * 13;
+    }
+    zip.file("事项办理报告.pdf", pdf.output("arraybuffer"));
+
+    const seen = new Set<string>();
+    for (const attachment of attachments) {
+      const key = `${attachment.filename}\u0000${attachment.size}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      try {
+        const response = await fetch(`/api/cases/${record.id}/attachments/${attachment.id}`, { credentials: "include" });
+        if (!response.ok) throw new Error(`附件下载失败：${attachment.filename}`);
+        zip.file(attachment.filename, await response.arrayBuffer());
+      } catch {
+        zip.file(`下载失败/${attachment.filename}.txt`, `附件下载失败：${attachment.filename}`);
+      }
+    }
+    const blob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${record.title.replace(/[\\/:*?"<>|]/g, "_")}-送审材料.zip`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
   const statusText = (completed: boolean, current: boolean) => completed ? "已完成" : current ? "办理中" : "待办理";
   const renderAttachments = (items: Attachment[]) => items.length === 0 ? (
     <p className="audit-empty">无附件</p>
@@ -1022,7 +1216,11 @@ function AuditChecklist({
     <div className="audit-checklist-overlay" role="dialog" aria-modal="true" aria-label="事项办理送审清单">
       <div className="audit-checklist-toolbar">
         <strong>送审清单预览</strong>
-        <div><button className="secondary" onClick={onClose}>返回</button><button className="primary" onClick={() => window.print()}>打印 / 保存为 PDF</button></div>
+        <div>
+          <button className="secondary" onClick={onClose}>返回</button>
+          <button className="secondary" onClick={() => void downloadPackage()}>打包报告及附件</button>
+          <button className="primary" onClick={() => window.print()}>打印 / 保存为 PDF</button>
+        </div>
       </div>
       <article className="audit-checklist-document">
         <header className="audit-document-header">

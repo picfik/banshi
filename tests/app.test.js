@@ -65,6 +65,42 @@ test("business APIs require an authenticated session", async (t) => {
   assert.equal(response.body.error.code, "UNAUTHENTICATED");
 });
 
+test("temporary todos support create, update, delete and validation", async (t) => {
+  const context = await setup();
+  t.after(() => rm(context.directory, { recursive: true, force: true }));
+
+  const invalid = await context.agent.post("/api/todos").send({
+    title: "",
+    dueDate: "not-a-date",
+    assignee: "",
+  });
+  assert.equal(invalid.status, 400);
+
+  const created = await context.agent.post("/api/todos").send({
+    title: "提交季度材料",
+    dueDate: "2026-12-01",
+    assignee: "张三",
+  });
+  assert.equal(created.status, 201);
+  const todoId = created.body.todo.id;
+
+  const updated = await context.agent.patch(`/api/todos/${todoId}`).send({
+    title: "提交季度材料并归档",
+    dueDate: "2026-12-03",
+    assignee: "李四",
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.todo.assignee, "李四");
+
+  const listed = await context.agent.get("/api/todos");
+  assert.equal(listed.body.todos.length, 1);
+  assert.equal(listed.body.todos[0].title, "提交季度材料并归档");
+
+  const removed = await context.agent.delete(`/api/todos/${todoId}`);
+  assert.equal(removed.status, 204);
+  assert.equal((await context.agent.get("/api/todos")).body.todos.length, 0);
+});
+
 test("renames cases and orders important cases first and held cases last", async (t) => {
   const context = await setup();
   t.after(() => rm(context.directory, { recursive: true, force: true }));

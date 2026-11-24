@@ -40,7 +40,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .offline-pill { padding: 6px 9px; border-radius: 14px; color: #9a5d19; background: #fff1d9; }
 
 .workspace { min-height: calc(100vh - 74px); display: grid; grid-template-columns: 280px minmax(0, 1fr); }
-.sidebar { min-width: 0; display: flex; flex-direction: column; overflow-x: hidden; padding: 30px 19px 18px; border-right: 1px solid var(--line); background: #f8f9f7; }
+.sidebar { min-width: 0; height: calc(100vh - 74px); display: flex; flex-direction: column; overflow-x: hidden; overflow-y: hidden; padding: 30px 19px 18px; border-right: 1px solid var(--line); background: #f8f9f7; }
 .sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 0 3px 20px; }
 .eyebrow { margin: 0 0 7px; color: #7e9a8b; font-size: 16px; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; }
 h1, h2, h3, p { margin-top: 0; }
@@ -49,7 +49,11 @@ h1, h2, h3, p { margin-top: 0; }
 .icon-button:hover { border-color: #9bb9a8; background: #f4f8f4; }
 .new-case-button { min-height: 40px; margin-bottom: 19px; border: 0; border-radius: 9px; color: white; background: var(--green); font-size: 16px; font-weight: 600; }
 .new-case-button:hover, .primary:hover { background: #245649; }
-.case-list { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.case-filter-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; margin: 0 0 10px; }
+.case-filter-tabs button { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 5px 8px; border: 1px solid #e1e7e1; border-radius: 7px; color: #66766d; background: #fff; font-size: 13px; }
+.case-filter-tabs button.active { border-color: #8baa96; color: #315848; background: #edf4ee; font-weight: 700; }
+.case-filter-tabs button span { min-width: 18px; height: 18px; display: inline-grid; place-items: center; border-radius: 9px; background: #eef1ed; font-size: 12px; }
+.case-list { width: 100%; min-height: 0; min-width: 0; display: grid; align-content: start; grid-template-columns: minmax(0, 1fr); gap: 8px; overflow-y: auto; padding-right: 2px; }
 .case-card { width: 100%; min-width: 0; max-width: 100%; display: block; overflow: hidden; padding: 13px 12px 11px; text-align: left; border: 1px solid transparent; border-radius: 10px; background: transparent; }
 .case-card:hover { background: #f0f4f0; }
 .case-card.selected { border-color: #d8e5db; background: #edf4ee; }
@@ -225,6 +229,23 @@ textarea::placeholder, input::placeholder { color: #b3bdb5; }
 .modal-close { position: absolute; top: 15px; right: 15px; width: 28px; height: 28px; border: 0; color: #829087; background: transparent; font-size: 20px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .audit-modal { width: min(100%, 520px); }
+.todo-modal { width: min(100%, 620px); }
+.todo-form { display: grid; gap: 12px; margin-top: 14px; }
+.todo-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.todo-form label { display: grid; gap: 6px; color: #52645a; font-size: 14px; }
+.todo-form input { height: 38px; padding: 0 10px; border: 1px solid #dce5de; border-radius: 7px; }
+.todo-list { max-height: 260px; display: grid; gap: 7px; overflow-y: auto; margin-top: 12px; padding-top: 12px; border-top: 1px solid #edf0ec; }
+.todo-list article { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #edf1ec; border-radius: 8px; }
+.todo-list article > div:first-child { min-width: 0; display: grid; gap: 3px; }
+.todo-list strong { overflow-wrap: anywhere; }
+.todo-list span { color: #7a887f; font-size: 12px; }
+.todo-list article > div:last-child { display: flex; flex: 0 0 auto; gap: 5px; }
+.danger-text { color: #a64e43 !important; }
+.todo-empty { margin: 12px 0; color: #87938c; text-align: center; }
+.todo-reminder { width: min(100%, 520px); }
+.todo-reminder-list { display: grid; gap: 8px; margin: 14px 0; }
+.todo-reminder-list article { display: grid; gap: 4px; padding: 10px 12px; border-left: 3px solid #d39a45; background: #fff8ea; }
+.todo-reminder-list span { color: #6d796f; font-size: 13px; }
 .audit-list { display: grid; gap: 0; max-height: 50vh; overflow-y: auto; margin: 18px 0; }
 .audit-list article { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid #eef0ed; }
 .audit-dot { width: 7px; height: 7px; margin-top: 4px; border-radius: 50%; background: #82a890; }

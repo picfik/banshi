@@ -92,3 +92,12 @@ export type Stage = {
   steps: Array<{ id: string; title: string; guidance: string; requiresReview?: boolean }>;
 };
 
+export type TemporaryTodo = {
+  id: string;
+  title: string;
+  dueDate: string;
+  assignee: string;
+  createdAt: string;
+  updatedAt: string;
+};
+

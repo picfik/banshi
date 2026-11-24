@@ -920,6 +920,64 @@ export async function createApp({
     res.json({ audit: dataStore.data.audit.slice(-500).reverse() });
   });
 
+  app.get("/api/todos", (req, res) => {
+    res.json({ todos: [...(dataStore.data.todos ?? [])].sort((a, b) =>
+      a.dueDate.localeCompare(b.dueDate) || b.updatedAt.localeCompare(a.updatedAt),
+    ) });
+  });
+
+  app.post("/api/todos", async (req, res) => {
+    const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+    const dueDate = typeof req.body?.dueDate === "string" ? req.body.dueDate : "";
+    const assignee = typeof req.body?.assignee === "string" ? req.body.assignee.trim() : "";
+    if (!title || title.length > 160) return sendError(res, 400, "INVALID_TODO_TITLE", "事件名称必填且不能超过 160 个字符");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return sendError(res, 400, "INVALID_TODO_DUE_DATE", "请选择有效的截止日期");
+    if (!assignee || assignee.length > 80) return sendError(res, 400, "INVALID_TODO_ASSIGNEE", "经办人必填且不能超过 80 个字符");
+    const now = new Date().toISOString();
+    const todo = { id: randomUUID(), title, dueDate, assignee, createdAt: now, updatedAt: now };
+    await dataStore.transaction(async (data) => {
+      if (!Array.isArray(data.todos)) data.todos = [];
+      data.todos.push(todo);
+      addAudit(data, req.username, "todo_created", null, { todoId: todo.id, title, dueDate, assignee });
+      await dataStore.save();
+      await syncJson();
+    });
+    res.status(201).json({ todo });
+  });
+
+  app.patch("/api/todos/:todoId", async (req, res) => {
+    const todo = dataStore.data.todos?.find((item) => item.id === req.params.todoId);
+    if (!todo) return sendError(res, 404, "TODO_NOT_FOUND", "未找到该临时待办");
+    const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+    const dueDate = typeof req.body?.dueDate === "string" ? req.body.dueDate : "";
+    const assignee = typeof req.body?.assignee === "string" ? req.body.assignee.trim() : "";
+    if (!title || title.length > 160) return sendError(res, 400, "INVALID_TODO_TITLE", "事件名称必填且不能超过 160 个字符");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return sendError(res, 400, "INVALID_TODO_DUE_DATE", "请选择有效的截止日期");
+    if (!assignee || assignee.length > 80) return sendError(res, 400, "INVALID_TODO_ASSIGNEE", "经办人必填且不能超过 80 个字符");
+    await dataStore.transaction(async (data) => {
+      todo.title = title;
+      todo.dueDate = dueDate;
+      todo.assignee = assignee;
+      todo.updatedAt = new Date().toISOString();
+      addAudit(data, req.username, "todo_updated", null, { todoId: todo.id, title, dueDate, assignee });
+      await dataStore.save();
+      await syncJson();
+    });
+    res.json({ todo });
+  });
+
+  app.delete("/api/todos/:todoId", async (req, res) => {
+    const todo = dataStore.data.todos?.find((item) => item.id === req.params.todoId);
+    if (!todo) return sendError(res, 404, "TODO_NOT_FOUND", "未找到该临时待办");
+    await dataStore.transaction(async (data) => {
+      data.todos = data.todos.filter((item) => item.id !== todo.id);
+      addAudit(data, req.username, "todo_deleted", null, { todoId: todo.id, title: todo.title });
+      await dataStore.save();
+      await syncJson();
+    });
+    res.status(204).end();
+  });
+
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
     if (error instanceof multer.MulterError) {
