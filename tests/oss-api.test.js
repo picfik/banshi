@@ -198,12 +198,11 @@ test("creates signed inline URLs for browser preview without changing download U
 
   const previewUrl = await context.getAttachmentUrl("attachments/image.png", {
     inline: true,
-    contentType: "image/png",
   });
   assert.equal(previewUrl, "https://example.test/attachments/image.png");
   assert.deepEqual(globalThis.__lastSignedOssObject, {
     key: "attachments/image.png",
-    options: { inline: true, contentType: "image/png" },
+    options: { inline: true },
   });
 
   await context.getAttachmentUrl("attachments/image.png");

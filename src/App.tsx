@@ -870,7 +870,7 @@ function App() {
     if (previewContentType?.startsWith("image/")) {
       try {
         const [url, downloadUrl] = await Promise.all([
-          getAttachmentUrl(attachment.objectKey, { inline: true, contentType: previewContentType }),
+          getAttachmentUrl(attachment.objectKey, { inline: true }),
           getAttachmentUrl(attachment.objectKey),
         ]);
         setImagePreviewError(false);
@@ -885,7 +885,7 @@ function App() {
     try {
       const url = await getAttachmentUrl(
         attachment.objectKey,
-        previewContentType ? { inline: true, contentType: previewContentType } : undefined,
+        previewContentType ? { inline: true } : undefined,
       );
       if (previewWindow) previewWindow.location.href = url;
     } catch (reason) {

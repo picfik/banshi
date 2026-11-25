@@ -31,11 +31,10 @@ export function getObjectKey(key: string): string {
 
 export function signOssObject(
   key: string,
-  options: { inline?: boolean; contentType?: string } = {},
+  options: { inline?: boolean } = {},
 ): string {
   const response: Record<string, string> = {};
   if (options.inline) response["content-disposition"] = "inline";
-  if (options.contentType) response["content-type"] = options.contentType;
   return getOssClient().signatureUrl(key, {
     expires: 3600,
     ...(Object.keys(response).length > 0 ? { response } : {}),

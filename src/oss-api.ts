@@ -891,7 +891,7 @@ export function jsonBody(value: unknown): string {
 
 export async function getAttachmentUrl(
   objectKey: string,
-  options: { inline?: boolean; contentType?: string } = {},
+  options: { inline?: boolean } = {},
 ): Promise<string> {
   await ensureLoaded();
   return signOssObject(objectKey, options);
