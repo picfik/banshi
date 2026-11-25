@@ -37,8 +37,41 @@ export const SUPPORTED_ATTACHMENT_EXTENSIONS = Object.freeze([
 ]);
 
 const supportedExtensions = new Set(SUPPORTED_ATTACHMENT_EXTENSIONS);
+const previewableImageTypes = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/apng",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+  "image/avif",
+  "image/svg+xml",
+  "image/x-icon",
+  "image/vnd.microsoft.icon",
+]);
+const previewableTextExtensions = new Set([
+  ".txt", ".csv", ".tsv", ".md", ".markdown", ".rst", ".tex", ".latex", ".bib",
+  ".xml", ".json", ".yaml", ".yml", ".log", ".ini", ".conf", ".cfg", ".properties", ".sql",
+]);
+const previewableImageExtensions = new Map([
+  [".jpg", "image/jpeg"], [".jpeg", "image/jpeg"], [".jpe", "image/jpeg"], [".jfif", "image/jpeg"],
+  [".pjpeg", "image/jpeg"], [".pjp", "image/jpeg"],
+  [".png", "image/png"], [".apng", "image/png"], [".gif", "image/gif"], [".webp", "image/webp"],
+  [".bmp", "image/bmp"], [".dib", "image/bmp"], [".avif", "image/avif"],
+  [".svg", "image/svg+xml"], [".ico", "image/x-icon"], [".cur", "image/x-icon"],
+]);
 
 export function isSupportedAttachmentName(filename) {
   const extension = filename.slice(filename.lastIndexOf(".")).toLowerCase();
   return supportedExtensions.has(extension);
+}
+
+export function getInlinePreviewContentType(filename, contentType) {
+  const normalizedType = contentType?.split(";")[0].trim().toLowerCase();
+  if (normalizedType === "application/pdf" || normalizedType === "text/plain") return normalizedType;
+  const extension = filename.slice(filename.lastIndexOf(".")).toLowerCase();
+  if (extension === ".pdf") return "application/pdf";
+  if (previewableTextExtensions.has(extension)) return "text/plain";
+  return previewableImageExtensions.get(extension) ??
+    (previewableImageTypes.has(normalizedType) ? normalizedType : null);
 }

@@ -889,7 +889,10 @@ export function jsonBody(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export async function getAttachmentUrl(objectKey: string): Promise<string> {
+export async function getAttachmentUrl(
+  objectKey: string,
+  options: { inline?: boolean; contentType?: string } = {},
+): Promise<string> {
   await ensureLoaded();
-  return signOssObject(objectKey);
+  return signOssObject(objectKey, options);
 }

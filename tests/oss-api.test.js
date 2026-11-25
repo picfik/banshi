@@ -44,9 +44,10 @@ async function setup() {
     logLevel: "silent",
   });
   try {
-    const { api } = await vite.ssrLoadModule("/src/oss-api.ts");
+    const { api, getAttachmentUrl } = await vite.ssrLoadModule("/src/oss-api.ts");
     return {
       api,
+      getAttachmentUrl,
       deleted,
       objects,
       setFailDataWrites(value) { failDataWrites = value; },
@@ -67,6 +68,7 @@ async function setup() {
       async close() {
         await vite.close();
         delete globalThis.__testOssClient;
+        delete globalThis.__lastSignedOssObject;
       },
     };
   } catch (error) {
@@ -188,6 +190,27 @@ test("accepts Office, image and archive attachments and rejects unsupported exte
     context.upload(record, "program.exe", "application/octet-stream"),
     (error) => error.status === 400 && error.code === "UNSUPPORTED_FILE_TYPE",
   );
+});
+
+test("creates signed inline URLs for browser preview without changing download URLs", async (t) => {
+  const context = await setup();
+  t.after(() => context.close());
+
+  const previewUrl = await context.getAttachmentUrl("attachments/image.png", {
+    inline: true,
+    contentType: "image/png",
+  });
+  assert.equal(previewUrl, "https://example.test/attachments/image.png");
+  assert.deepEqual(globalThis.__lastSignedOssObject, {
+    key: "attachments/image.png",
+    options: { inline: true, contentType: "image/png" },
+  });
+
+  await context.getAttachmentUrl("attachments/image.png");
+  assert.deepEqual(globalThis.__lastSignedOssObject, {
+    key: "attachments/image.png",
+    options: {},
+  });
 });
 
 test("saves AI provider credentials and model in shared OSS settings", async (t) => {

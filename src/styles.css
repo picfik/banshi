@@ -230,6 +230,11 @@ textarea::placeholder, input::placeholder { color: #b3bdb5; }
 .modal-close { position: absolute; top: 15px; right: 15px; width: 28px; height: 28px; border: 0; color: #829087; background: transparent; font-size: 20px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .audit-modal { width: min(100%, 520px); }
+.image-preview-modal { width: min(96vw, 1100px); height: min(90vh, 850px); display: flex; flex-direction: column; gap: 12px; }
+.image-preview-modal h2 { overflow-wrap: anywhere; padding-right: 28px; }
+.image-preview-frame { flex: 1; min-height: 0; display: grid; place-items: center; overflow: auto; border-radius: 8px; background: #f3f5f2; }
+.image-preview-frame img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.image-preview-actions { display: flex; justify-content: flex-end; }
 .todo-modal { width: min(100%, 620px); }
 .todo-form { display: grid; gap: 12px; margin-top: 14px; }
 .todo-print-action { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 12px 0; padding: 10px 12px; border: 1px solid #e6ece5; border-radius: 8px; background: #f8faf7; }

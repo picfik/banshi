@@ -6,7 +6,11 @@ import { jsPDF } from "jspdf";
 import { api, getAttachmentUrl, jsonBody } from "./api";
 import { aiProviders, analyzeAttachment, analyzeCaseAttachments, getDefaultAiPreferences, type AiPreferences } from "./ai";
 import type { Attachment, CaseRecord, HandlingPath, ProcurementMode, ProcurementStep, Stage, Step, SyncStatus, TemporaryTodo } from "./types";
-import { MAX_ATTACHMENT_SIZE_BYTES, SUPPORTED_ATTACHMENT_EXTENSIONS } from "../shared/attachments.js";
+import {
+  getInlinePreviewContentType,
+  MAX_ATTACHMENT_SIZE_BYTES,
+  SUPPORTED_ATTACHMENT_EXTENSIONS,
+} from "../shared/attachments.js";
 
 type CaseResponse = { case: CaseRecord; sync: SyncStatus };
 type CasesResponse = { cases: CaseRecord[]; sync: SyncStatus };
@@ -111,6 +115,8 @@ function App() {
   const [renameOpen, setRenameOpen] = useState(false);
   const [auditChecklistOpen, setAuditChecklistOpen] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<{ targetId: string; message: string } | null>(null);
+  const [imagePreview, setImagePreview] = useState<{ filename: string; url: string; downloadUrl: string } | null>(null);
+  const [imagePreviewError, setImagePreviewError] = useState(false);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [online, setOnline] = useState(navigator.onLine);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
@@ -859,11 +865,28 @@ function App() {
     setSearchOpen(false);
   }
 
-  async function openAttachment(objectKey: string) {
+  async function openAttachment(attachment: Attachment) {
+    const previewContentType = getInlinePreviewContentType(attachment.filename, attachment.contentType);
+    if (previewContentType?.startsWith("image/")) {
+      try {
+        const [url, downloadUrl] = await Promise.all([
+          getAttachmentUrl(attachment.objectKey, { inline: true, contentType: previewContentType }),
+          getAttachmentUrl(attachment.objectKey),
+        ]);
+        setImagePreviewError(false);
+        setImagePreview({ filename: attachment.filename, url, downloadUrl });
+      } catch (reason) {
+        handleError(reason);
+      }
+      return;
+    }
     const previewWindow = window.open("about:blank", "_blank");
     if (previewWindow) previewWindow.opener = null;
     try {
-      const url = await getAttachmentUrl(objectKey);
+      const url = await getAttachmentUrl(
+        attachment.objectKey,
+        previewContentType ? { inline: true, contentType: previewContentType } : undefined,
+      );
       if (previewWindow) previewWindow.location.href = url;
     } catch (reason) {
       previewWindow?.close();
@@ -877,6 +900,7 @@ function App() {
       <div className="attachment-list">
         {attachments.map((attachment) => {
           const canAnalyze = isAiSupportedAttachment(attachment);
+          const previewContentType = getInlinePreviewContentType(attachment.filename, attachment.contentType);
           const sizeLabel = attachment.size >= 1024 * 1024
             ? `${(attachment.size / (1024 * 1024)).toFixed(1)} MB`
             : `${(attachment.size / 1024).toFixed(0)} KB`;
@@ -884,8 +908,8 @@ function App() {
             <article className="attachment-card" key={attachment.id}>
               <span className="file-icon">{attachment.contentType === "application/pdf" ? "PDF" : "文件"}</span>
               <div className="attachment-info">
-                <button className="attachment-link" type="button" onClick={() => void openAttachment(attachment.objectKey)}>{attachment.filename}</button>
-                <small>{sizeLabel} · {attachment.syncMessage}</small>
+                <button className="attachment-link" type="button" title={previewContentType ? "在线预览附件" : "下载附件"} onClick={() => void openAttachment(attachment)}>{attachment.filename}</button>
+                <small>{previewContentType ? "可在线预览" : "需下载查看"} · {sizeLabel} · {attachment.syncMessage}</small>
               </div>
               <div className="attachment-actions">
                 <button className="text-button" disabled={busy || !online || !config?.aiEnabled || !canAnalyze} title={!canAnalyze ? "AI 解读支持 PDF、TXT 和常用 Office 文档" : config?.aiEnabled ? "使用配置的 AI 解读附件" : "请先配置 AI 服务"} onClick={() => void analyzeCaseAttachment(attachment, procurementStepId)}>{canAnalyze ? attachment.analysis ? "重新解读" : "AI 解读" : "暂不可解读"}</button>
@@ -1243,6 +1267,25 @@ function App() {
           )}
         </section>
       </main>
+
+      {imagePreview && (
+        <div className="modal-backdrop image-preview-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setImagePreview(null);
+        }}>
+          <section className="modal-card image-preview-modal" role="dialog" aria-modal="true" aria-label={`图片预览：${imagePreview.filename}`}>
+            <button type="button" className="modal-close" aria-label="关闭预览" onClick={() => setImagePreview(null)}>×</button>
+            <h2>{imagePreview.filename}</h2>
+            <div className="image-preview-frame">
+              {imagePreviewError
+                ? <p className="muted">此图片无法由当前浏览器预览，可下载原文件查看。</p>
+                : <img src={imagePreview.url} alt={imagePreview.filename} onError={() => setImagePreviewError(true)} />}
+            </div>
+            <div className="image-preview-actions">
+              <a className="secondary" href={imagePreview.downloadUrl} target="_blank" rel="noreferrer">下载原文件</a>
+            </div>
+          </section>
+        </div>
+      )}
 
       {createOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreateOpen(false); }}>
         <form className="modal-card" onSubmit={(event) => void createCase(event)}>
