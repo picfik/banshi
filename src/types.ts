@@ -80,6 +80,7 @@ export type CaseRecord = {
   source: string;
   isImportant?: boolean;
   isOnHold?: boolean;
+  aiAnalysis?: Analysis | null;
   handlingPath: string | null;
   createdAt: string;
   updatedAt: string;

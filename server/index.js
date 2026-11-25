@@ -445,6 +445,28 @@ export async function createApp({
     res.json({ case: publicCase(record), sync: publicSync(dataStore.data.sync, dataStore.data) });
   });
 
+  app.put("/api/cases/:caseId/analysis", async (req, res) => {
+    const record = getCase(req.params.caseId);
+    if (!record) return sendError(res, 404, "CASE_NOT_FOUND", "未找到该事项");
+    const analysis = req.body?.analysis;
+    const listFields = ["keyFacts", "checks", "nextSteps", "cautions", "humanVerification"];
+    if (
+      !analysis || typeof analysis !== "object" || typeof analysis.summary !== "string" ||
+      typeof analysis.disclaimer !== "string" || typeof analysis.generatedAt !== "string" ||
+      listFields.some((field) => !Array.isArray(analysis[field]) || analysis[field].some((item) => typeof item !== "string"))
+    ) {
+      return sendError(res, 400, "INVALID_ANALYSIS", "事项综合解读内容无效");
+    }
+    await dataStore.transaction(async (data) => {
+      record.aiAnalysis = analysis;
+      record.updatedAt = new Date().toISOString();
+      addAudit(data, req.username, "case_ai_analysis_saved", record.id, { generatedAt: analysis.generatedAt });
+      await dataStore.save();
+      await syncJson();
+    });
+    res.json({ case: publicCase(record), sync: publicSync(dataStore.data.sync, dataStore.data) });
+  });
+
   app.patch("/api/cases/:caseId/steps/:stepId", async (req, res) => {
     const record = getCase(req.params.caseId);
     if (!record) return sendError(res, 404, "CASE_NOT_FOUND", "未找到该事项");

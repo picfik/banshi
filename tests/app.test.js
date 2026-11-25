@@ -147,6 +147,32 @@ test("renames cases and orders important cases first and held cases last", async
   assert.equal(listed.body.cases[2].isOnHold, true);
 });
 
+test("saves case-wide AI analyses and rejects malformed analysis payloads", async (t) => {
+  const context = await setup();
+  t.after(() => rm(context.directory, { recursive: true, force: true }));
+  const record = await newCase(context.agent);
+  const analysis = {
+    summary: "根据附件整理的测试摘要",
+    keyFacts: ["事实"],
+    checks: ["待核对"],
+    nextSteps: ["后续步骤"],
+    cautions: ["注意事项"],
+    humanVerification: ["人工核实"],
+    disclaimer: "仅供辅助整理",
+    generatedAt: "2026-01-02T03:04:05.000Z",
+  };
+  const invalid = await context.agent.put(`/api/cases/${record.id}/analysis`).send({
+    analysis: { ...analysis, keyFacts: ["事实", 1] },
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.body.error.code, "INVALID_ANALYSIS");
+
+  const saved = await context.agent.put(`/api/cases/${record.id}/analysis`).send({ analysis });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.body.case.aiAnalysis, analysis);
+  assert.deepEqual(context.dataStore.data.cases[0].aiAnalysis, analysis);
+});
+
 test("global search finds case records and step notes", async (t) => {
   const context = await setup();
   t.after(() => rm(context.directory, { recursive: true, force: true }));

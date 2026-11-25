@@ -232,6 +232,10 @@ textarea::placeholder, input::placeholder { color: #b3bdb5; }
 .audit-modal { width: min(100%, 520px); }
 .todo-modal { width: min(100%, 620px); }
 .todo-form { display: grid; gap: 12px; margin-top: 14px; }
+.todo-print-action { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 12px 0; padding: 10px 12px; border: 1px solid #e6ece5; border-radius: 8px; background: #f8faf7; }
+.todo-print-action span { color: #748178; font-size: 13px; }
+.case-ai-analysis { margin: 12px 0 18px; }
+.case-ai-analysis .analysis-card { border: 1px solid #e4ece4; }
 .todo-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .todo-form label { display: grid; gap: 6px; color: #52645a; font-size: 14px; }
 .todo-form input { height: 38px; padding: 0 10px; border: 1px solid #dce5de; border-radius: 7px; }

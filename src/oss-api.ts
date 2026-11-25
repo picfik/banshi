@@ -617,6 +617,22 @@ async function handleApi(url: string, options: RequestInit): Promise<unknown> {
   const record = getCase(segments[2]);
   const resource = segments[3];
 
+  if (resource === "analysis" && segments.length === 4 && ["PUT", "PATCH"].includes(method)) {
+    const analysis = body.analysis as Analysis | undefined;
+    const listFields = ["keyFacts", "checks", "nextSteps", "cautions", "humanVerification"] as const;
+    if (
+      !analysis || typeof analysis !== "object" || typeof analysis.summary !== "string" ||
+      typeof analysis.disclaimer !== "string" || typeof analysis.generatedAt !== "string" ||
+      listFields.some((field) => !Array.isArray(analysis[field]) || analysis[field].some((item) => typeof item !== "string"))
+    ) {
+      error(400, "INVALID_ANALYSIS", "事项综合解读内容无效");
+    }
+    record.aiAnalysis = analysis;
+    updateRecord(record);
+    addAudit("case_ai_analysis_saved", record.id, { generatedAt: analysis.generatedAt });
+    return { case: publicCase(record), sync: await save() };
+  }
+
   if (resource === "flags" && segments.length === 4 && method === "PATCH") {
     if (
       typeof body.isImportant !== "boolean" || typeof body.isOnHold !== "boolean" ||

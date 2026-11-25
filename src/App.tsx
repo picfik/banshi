@@ -4,7 +4,7 @@ import JSZip from "jszip";
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
 import { api, getAttachmentUrl, jsonBody } from "./api";
-import { aiProviders, analyzeAttachment, getDefaultAiPreferences, type AiPreferences } from "./ai";
+import { aiProviders, analyzeAttachment, analyzeCaseAttachments, getDefaultAiPreferences, type AiPreferences } from "./ai";
 import type { Attachment, CaseRecord, HandlingPath, ProcurementMode, ProcurementStep, Stage, Step, SyncStatus, TemporaryTodo } from "./types";
 import { MAX_ATTACHMENT_SIZE_BYTES, SUPPORTED_ATTACHMENT_EXTENSIONS } from "../shared/attachments.js";
 
@@ -28,6 +28,18 @@ type ConfigResponse = {
   fileLimitBytes: number;
 };
 type AuditEntry = { id: string; actor: string; action: string; caseId: string; detail: Record<string, unknown>; at: string };
+const AI_SUPPORTED_EXTENSIONS = new Set([
+  ".pdf", ".txt",
+  ".doc", ".dot", ".docx", ".docm", ".dotx", ".dotm", ".docb",
+  ".xls", ".xlt", ".xla", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".xlam", ".csv", ".tsv",
+  ".ppt", ".pot", ".pps", ".ppa", ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppam",
+  ".odp", ".odt", ".ods", ".rtf", ".html", ".htm", ".xml",
+]);
+
+function isAiSupportedAttachment(attachment: Attachment): boolean {
+  const extension = attachment.filename.slice(attachment.filename.lastIndexOf(".")).toLowerCase();
+  return attachment.contentType === "application/pdf" || AI_SUPPORTED_EXTENSIONS.has(extension);
+}
 
 function formatTime(value: string | null): string {
   if (!value) return "—";
@@ -57,6 +69,23 @@ function getCaseCategory(record: CaseRecord) {
   if (progress.done === 0) return "pending";
   if (progress.done === progress.total) return "completed";
   return "handling";
+}
+
+function getCaseAttachments(record: CaseRecord): Attachment[] {
+  return record.steps.flatMap((step) => [
+    ...step.attachments,
+    ...(step.procurementSteps ?? []).flatMap((procurementStep) => procurementStep.attachments ?? []),
+  ]);
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character] ?? character);
 }
 
 function App() {
@@ -95,6 +124,13 @@ function App() {
   const [hiddenAnalysisIds, setHiddenAnalysisIds] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("banshi-hidden-analysis") ?? "[]") as string[];
+    } catch {
+      return [];
+    }
+  });
+  const [hiddenCaseAnalysisIds, setHiddenCaseAnalysisIds] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("banshi-hidden-case-analysis") ?? "[]") as string[];
     } catch {
       return [];
     }
@@ -495,12 +531,9 @@ function App() {
       setError("请先在 AI 设置中选择服务并填写 API Key");
       return;
     }
-    const canAnalyze = attachment.contentType === "application/pdf" ||
-      attachment.contentType === "text/plain" ||
-      [".docx", ".docm", ".dotx", ".dotm", ".docb", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".xlam", ".xls", ".xlt", ".xla", ".csv", ".tsv", ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppam", ".odp", ".odt", ".ods", ".rtf", ".html", ".htm", ".xml"]
-        .includes(attachment.filename.slice(attachment.filename.lastIndexOf(".")).toLowerCase());
+    const canAnalyze = isAiSupportedAttachment(attachment);
     if (!canAnalyze) {
-      setError("该文件格式暂不支持 AI 解读；Office 文档请使用 .docx/.xlsx/.pptx 等格式");
+      setError("该文件格式暂不支持 AI 解读");
       return;
     }
     if (!window.confirm("附件文本将发送给当前选择的 AI 服务进行分析。请确认已获授权，且材料符合单位的数据处理要求。")) return;
@@ -704,6 +737,75 @@ function App() {
     }
   }
 
+  function printPendingTodos() {
+    const pending = todos.filter((todo) => !todo.isCompleted)
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.updatedAt.localeCompare(b.updatedAt));
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      setError("浏览器阻止了打印窗口，请允许此页面打开弹出窗口后重试");
+      return;
+    }
+    printWindow.opener = null;
+    const rows = pending.map((todo, index) => `
+      <tr>
+        <td>${index + 1}</td>
+        <td>${escapeHtml(todo.title)}</td>
+        <td>${escapeHtml(todo.dueDate)}</td>
+        <td>${escapeHtml(todo.assignee)}</td>
+        <td></td>
+      </tr>`).join("");
+    printWindow.document.open();
+    printWindow.document.write(`<!doctype html>
+      <html lang="zh-CN"><head><meta charset="utf-8"><title>未完成临时待办</title>
+      <style>
+        @page { size: A4; margin: 18mm; }
+        body { color: #222; font: 14px "Microsoft YaHei", "SimSun", sans-serif; }
+        h1 { margin: 0 0 8px; text-align: center; font-size: 22px; }
+        p { margin: 0 0 18px; text-align: center; color: #555; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 9px 8px; border: 1px solid #888; text-align: left; }
+        th { background: #f0f2ef; }
+        td:first-child { width: 32px; text-align: center; }
+        td:nth-child(3), td:nth-child(4), td:nth-child(5) { width: 18%; }
+        @media print { tr { break-inside: avoid; } }
+      </style></head><body>
+      <h1>未完成临时待办</h1>
+      <p>打印时间：${escapeHtml(formatTime(new Date().toISOString()))}　共 ${pending.length} 项</p>
+      <table><thead><tr><th>序号</th><th>事件名称</th><th>截止日期</th><th>经办人</th><th>完成情况</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5">暂无未完成待办</td></tr>'}</tbody></table>
+      <script>window.onload = () => window.print();</script>
+      </body></html>`);
+    printWindow.document.close();
+  }
+
+  async function analyzeWholeCase() {
+    if (!selectedCase || !config?.aiEnabled) {
+      setError("请先在 AI 设置中选择服务并填写 API Key");
+      return;
+    }
+    if (getCaseAttachments(selectedCase).length === 0) {
+      setError("该事项还没有附件，暂不能生成综合解读");
+      return;
+    }
+    if (!window.confirm("该操作会读取并将此事项全部附件文本发送至当前 AI 服务商进行综合解读。请确认已获授权，且材料符合单位的数据处理要求。")) return;
+    setBusy(true);
+    setError("");
+    try {
+      const analysis = await analyzeCaseAttachments(selectedCase, config.aiPreferences);
+      const result = await api<CaseResponse>(`/api/cases/${selectedCase.id}/analysis`, {
+        method: "PUT",
+        body: jsonBody({ analysis }),
+      });
+      setSelectedCase(result.case);
+      setCases((current) => current.map((record) => record.id === result.case.id ? result.case : record));
+      setSync(result.sync);
+    } catch (reason) {
+      handleError(reason);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function deleteTodo(todo: TemporaryTodo) {
     if (!window.confirm(`确定删除临时待办“${todo.title}”？`)) return;
     setBusy(true);
@@ -773,10 +875,7 @@ function App() {
     return (
       <div className="attachment-list">
         {attachments.map((attachment) => {
-          const canAnalyze = attachment.contentType === "application/pdf" ||
-            attachment.contentType === "text/plain" ||
-            [".docx", ".docm", ".dotx", ".dotm", ".docb", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".xlam", ".xls", ".xlt", ".xla", ".csv", ".tsv", ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppam", ".odp", ".odt", ".ods", ".rtf", ".html", ".htm", ".xml"]
-              .includes(attachment.filename.slice(attachment.filename.lastIndexOf(".")).toLowerCase());
+          const canAnalyze = isAiSupportedAttachment(attachment);
           const sizeLabel = attachment.size >= 1024 * 1024
             ? `${(attachment.size / (1024 * 1024)).toFixed(1)} MB`
             : `${(attachment.size / 1024).toFixed(0)} KB`;
@@ -963,6 +1062,7 @@ function App() {
                   </div>
                   <div className="case-action-buttons">
                     <button className="secondary" onClick={() => setAuditChecklistOpen(true)}>生成送审清单</button>
+                    <button className="secondary" disabled={busy || !online || !config?.aiEnabled || getCaseAttachments(selectedCase).length === 0} title={!config?.aiEnabled ? "请先配置 AI 服务" : getCaseAttachments(selectedCase).length === 0 ? "该事项暂无附件" : "综合解读此事项中的全部附件"} onClick={() => void analyzeWholeCase()}>{selectedCase.aiAnalysis ? "重新生成 AI 综合解读" : "AI 综合解读全部附件"}</button>
                     <button className="secondary" disabled={busy || !online} onClick={() => setRenameOpen(true)}>修改名称</button>
                     <button className="secondary" disabled={busy || !online} onClick={() => void updateCaseFlags({ isImportant: !selectedCase.isImportant })}>{selectedCase.isImportant ? "★ 已置顶" : "设为重要并置顶"}</button>
                     <button className="secondary" disabled={busy || !online} onClick={() => void updateCaseFlags({ isOnHold: !selectedCase.isOnHold })}>{selectedCase.isOnHold ? "恢复办理" : "设为搁置并置底"}</button>
@@ -977,6 +1077,23 @@ function App() {
                 </div>
               )}
               <div className="source-card"><span className="source-icon">↳</span><div><span>事项来源</span><strong>{selectedCase.source}</strong></div>{selectedHandlingPath && <span className="path-chip">路径：{selectedHandlingPath.title}</span>}<small>建档于 {formatTime(selectedCase.createdAt)}</small></div>
+              {selectedCase.aiAnalysis && (
+                <section className="case-ai-analysis">
+                  <AnalysisCard
+                    analysis={selectedCase.aiAnalysis}
+                    visible={!hiddenCaseAnalysisIds.includes(selectedCase.id)}
+                    onToggle={() => {
+                      setHiddenCaseAnalysisIds((current) => {
+                        const next = current.includes(selectedCase.id)
+                          ? current.filter((id) => id !== selectedCase.id)
+                          : [...current, selectedCase.id];
+                        localStorage.setItem("banshi-hidden-case-analysis", JSON.stringify(next));
+                        return next;
+                      });
+                    }}
+                  />
+                </section>
+              )}
 
               <div className="stage-overview">
                 {phaseProgress.map((stage, index) => (
@@ -1158,6 +1275,10 @@ function App() {
         <section className="modal-card todo-modal">
           <button type="button" className="modal-close" aria-label="关闭" onClick={() => setTodoOpen(false)}>×</button>
           <p className="eyebrow">临时待办</p><h2>待办提醒</h2>
+          <div className="todo-print-action">
+            <span>一键打印全部未完成待办，按截止日期排序</span>
+            <button type="button" className="secondary" onClick={printPendingTodos}>打印未完成待办</button>
+          </div>
           <form className="todo-form" onSubmit={(event) => void saveTodo(event)}>
             <label>事件名称 <span className="required">*</span><input name="title" required maxLength={160} defaultValue={todoEditing?.title ?? ""} /></label>
             <div className="todo-form-row">

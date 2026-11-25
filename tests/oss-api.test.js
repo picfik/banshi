@@ -203,3 +203,30 @@ test("saves AI provider credentials and model in shared OSS settings", async (t)
   });
   assert.deepEqual(persisted.settings.ai, config.aiPreferences);
 });
+
+test("saves and reloads a case-wide AI analysis", async (t) => {
+  const context = await setup();
+  t.after(() => context.close());
+  const record = await context.createCase("综合解读测试");
+  const analysis = {
+    summary: "根据附件整理的测试摘要",
+    keyFacts: ["事实"],
+    checks: ["待核对"],
+    nextSteps: ["后续步骤"],
+    cautions: ["注意事项"],
+    humanVerification: ["人工核实"],
+    disclaimer: "仅供辅助整理",
+    generatedAt: "2026-01-02T03:04:05.000Z",
+  };
+
+  const saved = await context.api(`/api/cases/${record.id}/analysis`, {
+    method: "PUT",
+    body: JSON.stringify({ analysis }),
+  });
+  const loaded = await context.api(`/api/cases/${record.id}`);
+  const persisted = JSON.parse(await context.objects.get("test/data/cases.json").text());
+
+  assert.deepEqual(saved.case.aiAnalysis, analysis);
+  assert.deepEqual(loaded.case.aiAnalysis, analysis);
+  assert.deepEqual(persisted.cases.find((item) => item.id === record.id).aiAnalysis, analysis);
+});
