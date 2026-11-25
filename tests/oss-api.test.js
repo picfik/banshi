@@ -162,7 +162,7 @@ test("renames cases and sorts important cases first and held cases last", async 
   assert.equal(result.cases[2].isOnHold, true);
 });
 
-test("accepts Office and archive attachments and rejects unsupported extensions", async (t) => {
+test("accepts Office, image and archive attachments and rejects unsupported extensions", async (t) => {
   const context = await setup();
   t.after(() => context.close());
   const config = await context.api("/api/config");
@@ -175,9 +175,15 @@ test("accepts Office and archive attachments and rejects unsupported extensions"
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   );
   const archive = await context.upload(record, "材料.7z", "application/x-7z-compressed");
+  const raster = await context.upload(record, "照片.heic", "image/heic");
+  const vector = await context.upload(record, "图纸.svg", "image/svg+xml");
+  const cameraRaw = await context.upload(record, "相机.cr3", "application/octet-stream");
 
   assert.equal(office.attachment.filename, "采购文件.docx");
   assert.equal(archive.attachment.filename, "材料.7z");
+  assert.equal(raster.attachment.filename, "照片.heic");
+  assert.equal(vector.attachment.filename, "图纸.svg");
+  assert.equal(cameraRaw.attachment.filename, "相机.cr3");
   await assert.rejects(
     context.upload(record, "program.exe", "application/octet-stream"),
     (error) => error.status === 400 && error.code === "UNSUPPORTED_FILE_TYPE",

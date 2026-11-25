@@ -35,6 +35,7 @@ const AI_SUPPORTED_EXTENSIONS = new Set([
   ".ppt", ".pot", ".pps", ".ppa", ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppam",
   ".odp", ".odt", ".ods", ".rtf", ".html", ".htm", ".xml",
 ]);
+const ATTACHMENT_ACCEPT = [...SUPPORTED_ATTACHMENT_EXTENSIONS, "image/*"].join(",");
 
 function isAiSupportedAttachment(attachment: Attachment): boolean {
   const extension = attachment.filename.slice(attachment.filename.lastIndexOf(".")).toLowerCase();
@@ -1167,7 +1168,7 @@ function App() {
                                   <div className="upload-row">
                                     <input
                                       type="file"
-                                      accept={SUPPORTED_ATTACHMENT_EXTENSIONS.join(",")}
+                                      accept={ATTACHMENT_ACCEPT}
                                       multiple
                                       disabled={busy || !online || currentStep?.id !== activeStep.id || activeStep.status === "completed"}
                                       onChange={(event) => void uploadFiles(event, step.id)}
@@ -1207,7 +1208,7 @@ function App() {
 
                           <div className="materials-head"><div><h3>办理依据材料</h3><span>支持多选并自动上传；Office、PDF、文档及压缩文件，单个文件最大 100 MB</span></div><span>{activeStep.attachments.length} 份</span></div>
                           <div className="upload-row">
-                            <input name="file" type="file" accept={SUPPORTED_ATTACHMENT_EXTENSIONS.join(",")} multiple disabled={busy || !online} onChange={(event) => void uploadFiles(event)} />
+                            <input name="file" type="file" accept={ATTACHMENT_ACCEPT} multiple disabled={busy || !online} onChange={(event) => void uploadFiles(event)} />
                           </div>
                           {uploadStatus?.targetId === `${selectedCase.id}:step:${activeStep.id}` && uploadStatus.message && <p className="hint-text upload-status" role="status">{uploadStatus.message}</p>}
                           {!online && <p className="hint-text">离线时不支持上传或编辑；恢复网络后请重新操作。</p>}

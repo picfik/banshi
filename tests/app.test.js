@@ -372,7 +372,7 @@ test("unconfigured AI returns an explicit error and creates no analysis", async 
   assert.equal(stored.analysis, null);
 });
 
-test("uploads Office and compressed attachments while rejecting unsupported files", async (t) => {
+test("uploads Office, image and compressed attachments while rejecting unsupported files", async (t) => {
   const context = await setup();
   t.after(() => rm(context.directory, { recursive: true, force: true }));
   const config = await context.agent.get("/api/config");
@@ -388,15 +388,29 @@ test("uploads Office and compressed attachments while rejecting unsupported file
   const archive = await context.agent
     .post(`/api/cases/${record.id}/steps/source-register/attachments`)
     .attach("file", Buffer.from("archive content"), { filename: "materials.7z", contentType: "application/x-7z-compressed" });
+  const raster = await context.agent
+    .post(`/api/cases/${record.id}/steps/source-register/attachments`)
+    .attach("file", Buffer.from("image content"), { filename: "photo.avif", contentType: "image/avif" });
+  const vector = await context.agent
+    .post(`/api/cases/${record.id}/steps/source-register/attachments`)
+    .attach("file", Buffer.from("<svg/>"), { filename: "diagram.svg", contentType: "image/svg+xml" });
+  const cameraRaw = await context.agent
+    .post(`/api/cases/${record.id}/steps/source-register/attachments`)
+    .attach("file", Buffer.from("raw image content"), { filename: "camera.cr3", contentType: "application/octet-stream" });
   const unsupported = await context.agent
     .post(`/api/cases/${record.id}/steps/source-register/attachments`)
     .attach("file", Buffer.from("not allowed"), { filename: "program.exe", contentType: "application/octet-stream" });
 
   assert.equal(office.status, 201);
   assert.equal(archive.status, 201);
+  assert.equal(raster.status, 201);
+  assert.equal(vector.status, 201);
+  assert.equal(cameraRaw.status, 201);
   assert.equal(unsupported.status, 400);
   assert.equal(unsupported.body.error.code, "UNSUPPORTED_FILE_TYPE");
   assert.match(office.body.attachment.contentType, /openxmlformats/);
+  assert.equal(raster.body.attachment.contentType, "image/avif");
+  assert.equal(vector.body.attachment.contentType, "image/svg+xml");
   const download = await context.agent.get(`/api/cases/${record.id}/attachments/${office.body.attachment.id}`);
   assert.match(download.headers["content-disposition"], /^attachment;/);
 });
